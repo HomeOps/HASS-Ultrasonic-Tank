@@ -15,7 +15,7 @@ colour-blind safe: series differ by line style, marker and brightness.
 
     python tools/replay.py --site cr
     python tools/replay.py --site cr --param full_m=0.23 --chart replay.png
-    python tools/replay.py --compare --baseline-param max_rise_gap_s=0 --chart compare.png
+    python tools/replay.py --baseline-ref v0.2.0 --chart docs/replay-v0.2.0-vs-current.svg
 """
 from __future__ import annotations
 
@@ -26,7 +26,9 @@ from datetime import date, datetime, timedelta, timezone
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 
 REPO = Path(__file__).resolve().parent.parent
 MODEL_PATH = REPO / "custom_components" / "ultrasonic_tank" / "model.py"
@@ -42,9 +44,24 @@ BIG_ERROR_PTS = 20.0                # reported as "off by more than"
 REFERENCE_GAP_S = 3 * 3600          # charts do not draw a line across a reference gap this long
 
 
-def load_model():
-    """Import model.py on its own, so the package __init__ (Home Assistant) is not needed."""
-    spec = importlib.util.spec_from_file_location("ultrasonic_tank_model", MODEL_PATH)
+def load_model(ref: str | None = None):
+    """Import model.py on its own, so the package __init__ (Home Assistant) is not needed.
+
+    With ``ref`` (a git tag or commit) the model.py from that revision is loaded instead
+    of the working tree, so a release can be replayed side by side with the current code.
+    """
+    name = "ultrasonic_tank_model"
+    path = MODEL_PATH
+    if ref:
+        rel = MODEL_PATH.relative_to(REPO).as_posix()
+        try:
+            source = subprocess.run(["git", "-C", str(REPO), "show", f"{ref}:{rel}"], check=True, capture_output=True, text=True, encoding="utf-8").stdout
+        except subprocess.CalledProcessError as err:
+            raise SystemExit(f"--baseline-ref {ref!r}: {err.stderr.strip()}") from err
+        path = Path(tempfile.mkdtemp(prefix="tank-model-")) / "model.py"
+        path.write_text(source, encoding="utf-8")
+        name = f"ultrasonic_tank_model_{ref}".replace(".", "_").replace("-", "_")
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -66,6 +83,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--reference-full", type=float, default=80.0, help="reference reading at 100 %% (default: 80)")
     parser.add_argument("--param", action="append", default=[], metavar="NAME=VALUE", help="override a TankParameters field, e.g. full_m=0.23 (repeatable)")
     parser.add_argument("--compare", action="store_true", help="also replay a baseline and compare")
+    parser.add_argument("--baseline-ref", metavar="TAG", help="baseline = model.py from this git tag/commit (implies --compare), e.g. v0.2.0")
     parser.add_argument("--baseline-param", action="append", default=[], metavar="NAME=VALUE", help="override a field for the baseline only (repeatable)")
     parser.add_argument("--zoom-from", type=datetime.fromisoformat, help="chart: local start of a zoom panel (YYYY-MM-DDTHH:MM)")
     parser.add_argument("--zoom-to", type=datetime.fromisoformat, help="chart: local end of the zoom panel")
@@ -230,9 +248,10 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     baseline = None
-    if args.compare:
-        base_params = build_parameters(model_module, args.baseline_param)
-        base_readings, base_errors, base_days = evaluate(model_module, base_params, frames, reference, args.tick, local)
+    if args.compare or args.baseline_ref:
+        base_module = load_model(args.baseline_ref) if args.baseline_ref else model_module
+        base_params = build_parameters(base_module, args.baseline_param)
+        base_readings, base_errors, base_days = evaluate(base_module, base_params, frames, reference, args.tick, local)
         better = worse = 0
         for (_, b), (_, c) in zip(base_errors, errors):
             if abs(c) < abs(b) - SAME_WITHIN_PTS:
@@ -241,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
                 worse += 1
         baseline = {"readings": base_readings, "errors": base_errors}
         summary["baseline"] = {
+            "ref": args.baseline_ref,
             "overrides": args.baseline_param,
             "score": score([e for _, e in base_errors]),
             "days": base_days,
@@ -305,10 +325,11 @@ def draw_chart(path: Path, readings, errors, baseline, reference, frames, params
         return datetime.fromtimestamp(when, timezone.utc)
 
     s = summary["score"]
-    cand_label = "AFTER (thick bright solid)" if baseline else "model.py replay (thick solid)"
+    cand_label = "CURRENT model.py (thick bright solid)" if baseline else "model.py replay (thick solid)"
     if summary["overrides"]:
         cand_label += " [" + ", ".join(summary["overrides"]) + "]"
-    base_label = "BEFORE (grey dashed)"
+    base_ref = baseline and summary["baseline"]["ref"]
+    base_label = f"{base_ref} release (grey dashed)" if base_ref else "BEFORE (grey dashed)"
     if baseline and summary["baseline"]["overrides"]:
         base_label += " [" + ", ".join(summary["baseline"]["overrides"]) + "]"
     truth_label = "TRUTH, pressure (hollow diamonds, scoring only)"

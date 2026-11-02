@@ -31,6 +31,11 @@ e.g. @{ max_rise_gap_s = 0 } for the v0.2.0 gate. @{} compares against the
 plain defaults. The result gains a Baseline property (score, per-day table, and
 how many reference samples got better, worse or stayed the same).
 
+.PARAMETER BaselineRef
+Compare against model.py from a git tag or commit, e.g. v0.2.0, instead of the
+working tree. 'previous' resolves to the latest release tag. When -Chart is a
+directory, the chart is written there as replay-<tag>-vs-current.svg.
+
 .PARAMETER ZoomFrom
 Chart: local start of an extra zoom panel (yyyy-MM-ddTHH:mm). Needs -ZoomTo.
 
@@ -63,6 +68,10 @@ $base.Score, $test.Score
 .EXAMPLE
 # Before/after chart for a model change: the working tree vs the v0.2.0 gate
 .\tools\Invoke-TankReplay.ps1 -Baseline @{ max_rise_gap_s = 0 } -ZoomFrom 2026-11-01T18:00 -ZoomTo 2026-11-02T16:30 -Chart compare.png -Open
+
+.EXAMPLE
+# The PR chart: the last release vs the working tree, into docs/replay-<tag>-vs-current.svg
+.\tools\Invoke-TankReplay.ps1 -BaselineRef previous -ZoomFrom 2026-11-01T18:00 -ZoomTo 2026-11-02T16:30 -Chart docs
 #>
 [CmdletBinding()]
 param(
@@ -71,6 +80,7 @@ param(
     [string]$To,
     [hashtable]$Parameter = @{},
     [hashtable]$Baseline,
+    [string]$BaselineRef,
     [string]$ZoomFrom,
     [string]$ZoomTo,
     [string]$Chart,
@@ -102,9 +112,21 @@ if ($PSBoundParameters.ContainsKey('Baseline')) {
         $replayArgs.AddRange([string[]]@('--baseline-param', "${name}=${value}"))
     }
 }
+if ($BaselineRef) {
+    if ($BaselineRef -eq 'previous') {
+        $BaselineRef = git -C $repoRoot describe --tags --abbrev=0
+        if ($LASTEXITCODE -ne 0 -or -not $BaselineRef) { throw 'No release tag found for -BaselineRef previous.' }
+        Write-Verbose "Baseline: latest release tag $BaselineRef"
+    }
+    $replayArgs.AddRange([string[]]@('--baseline-ref', $BaselineRef))
+}
 if ($ZoomFrom -and $ZoomTo) { $replayArgs.AddRange([string[]]@('--zoom-from', $ZoomFrom, '--zoom-to', $ZoomTo)) }
 if ($Chart) {
     $chartPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Chart)
+    if (Test-Path -LiteralPath $chartPath -PathType Container) {
+        $chartName = if ($BaselineRef) { "replay-$BaselineRef-vs-current.svg" } else { 'replay-current.svg' }
+        $chartPath = Join-Path $chartPath $chartName
+    }
     $replayArgs.AddRange([string[]]@('--chart', $chartPath))
 }
 if ($TicksPath) {
@@ -140,6 +162,7 @@ $result = [pscustomobject]@{
     Files            = @($summary.files)
     Baseline         = if ($summary.baseline) {
         [pscustomobject]@{
+            Ref       = $summary.baseline.ref
             Overrides = @($summary.baseline.overrides)
             Score     = $summary.baseline.score
             Days      = @($summary.baseline.days | ForEach-Object { [pscustomobject]@{ Day = $_.day; Samples = $_.samples; Mean = $_.mean; Median = $_.median; P90 = $_.p90; Max = $_.max; Bias = $_.bias } })
