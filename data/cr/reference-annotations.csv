@@ -1,0 +1,2 @@
+StartUtc,EndUtc,MinPct,MaxPct,Source,Note
+2026-10-28T20:22:00Z,2026-11-01T04:20:00Z,0,5,owner,"Tank empty or almost empty (owner, 2026-11-02). Pressure sensor unavailable for most of this span; its last readings around it were -3.8 to +4 %. Ends when the truck fill starts (raw 2.46 m -> 0.30 m in ~15 min at 22:20 CR on 10-31)."
