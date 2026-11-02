@@ -56,8 +56,10 @@ inside the range has no error, outside it the error is the distance to the range
 HA's statistics for the raw sensor and the pressure level (the hPa entity has
 no statistics in HA), recovered from the recorder (columns `StartUtc, StatisticId, Mean, Min, Max`):
 
-- `statistics/hour/YYYY-MM.csv`: hourly, raw since 2026-07-26 and pressure
+- `statistics/hour/YYYY-MM-DD.csv`: hourly, raw since 2026-07-26 and pressure
   since 2026-07-31. HA keeps these forever.
+
+All data is split by UTC day, one file per day, always.
 - `statistics/5minute/YYYY-MM-DD.csv`: 5-minute, from 2026-10-23. HA purges
   these with the recorder, so these files are the only copy of the oldest days.
 

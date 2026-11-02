@@ -1,0 +1,7 @@
+"StartUtc","StatisticId","Mean","Min","Max"
+"2026-07-26T18:00:00Z","sensor.driveway_water_tank_sensor_tank_distance_raw","0.8681008036893991","0.333000004291534","0.999000012874603"
+"2026-07-26T19:00:00Z","sensor.driveway_water_tank_sensor_tank_distance_raw","0.754228079184028","0.310999989509583","1.01400005817413"
+"2026-07-26T20:00:00Z","sensor.driveway_water_tank_sensor_tank_distance_raw","0.8431026816954116","0.291999995708466","1.32000005245209"
+"2026-07-26T21:00:00Z","sensor.driveway_water_tank_sensor_tank_distance_raw","0.4975418499634276","0.340000003576279","0.986999988555908"
+"2026-07-26T22:00:00Z","sensor.driveway_water_tank_sensor_tank_distance_raw","0.4881529737071153","0.326999992132187","0.975000023841858"
+"2026-07-26T23:00:00Z","sensor.driveway_water_tank_sensor_tank_distance_raw","0.7588318032861002","0.337999999523163","2.02600002288818"
