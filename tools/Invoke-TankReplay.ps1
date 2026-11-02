@@ -25,8 +25,22 @@ Last UTC day file to load (yyyy-MM-dd). Default: all.
 TankParameters overrides for experiments, e.g. @{ full_m = 0.23; floor_m = 2.12 }.
 The shipped model.py is not changed.
 
+.PARAMETER Baseline
+Also replay a baseline and compare: the shipped defaults plus these overrides,
+e.g. @{ max_rise_gap_s = 0 } for the v0.2.0 gate. @{} compares against the
+plain defaults. The result gains a Baseline property (score, per-day table, and
+how many reference samples got better, worse or stayed the same).
+
+.PARAMETER ZoomFrom
+Chart: local start of an extra zoom panel (yyyy-MM-ddTHH:mm). Needs -ZoomTo.
+
+.PARAMETER ZoomTo
+Chart: local end of the zoom panel.
+
 .PARAMETER Chart
-Write a PNG chart to this path (needs matplotlib). With -Open, open it after.
+Write a chart to this path (.png or .svg, needs matplotlib): level, optional
+zoom, and error vs the reference. Dark mode, colour-blind safe. With -Open,
+open it after.
 
 .PARAMETER TicksPath
 Write every published tick (level, volume, flow, lock, reference) to this CSV.
@@ -45,6 +59,10 @@ Python executable. Default: python on PATH.
 $base = .\tools\Invoke-TankReplay.ps1
 $test = .\tools\Invoke-TankReplay.ps1 -Parameter @{ full_m = 0.23 }
 $base.Score, $test.Score
+
+.EXAMPLE
+# Before/after chart for a model change: the working tree vs the v0.2.0 gate
+.\tools\Invoke-TankReplay.ps1 -Baseline @{ max_rise_gap_s = 0 } -ZoomFrom 2026-11-01T18:00 -ZoomTo 2026-11-02T16:30 -Chart compare.png -Open
 #>
 [CmdletBinding()]
 param(
@@ -52,6 +70,9 @@ param(
     [string]$From,
     [string]$To,
     [hashtable]$Parameter = @{},
+    [hashtable]$Baseline,
+    [string]$ZoomFrom,
+    [string]$ZoomTo,
     [string]$Chart,
     [switch]$Open,
     [string]$TicksPath,
@@ -74,6 +95,14 @@ foreach ($name in $Parameter.Keys) {
     $value = [string]::Format([cultureinfo]::InvariantCulture, '{0}', $Parameter[$name])
     $replayArgs.AddRange([string[]]@('--param', "${name}=${value}"))
 }
+if ($PSBoundParameters.ContainsKey('Baseline')) {
+    $replayArgs.Add('--compare')
+    foreach ($name in $Baseline.Keys) {
+        $value = [string]::Format([cultureinfo]::InvariantCulture, '{0}', $Baseline[$name])
+        $replayArgs.AddRange([string[]]@('--baseline-param', "${name}=${value}"))
+    }
+}
+if ($ZoomFrom -and $ZoomTo) { $replayArgs.AddRange([string[]]@('--zoom-from', $ZoomFrom, '--zoom-to', $ZoomTo)) }
 if ($Chart) {
     $chartPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Chart)
     $replayArgs.AddRange([string[]]@('--chart', $chartPath))
@@ -109,6 +138,16 @@ $result = [pscustomobject]@{
     Overrides        = @($summary.overrides)
     Parameters       = $summary.parameters
     Files            = @($summary.files)
+    Baseline         = if ($summary.baseline) {
+        [pscustomobject]@{
+            Overrides = @($summary.baseline.overrides)
+            Score     = $summary.baseline.score
+            Days      = @($summary.baseline.days | ForEach-Object { [pscustomobject]@{ Day = $_.day; Samples = $_.samples; Mean = $_.mean; Median = $_.median; P90 = $_.p90; Max = $_.max; Bias = $_.bias } })
+            Better    = $summary.baseline.better
+            Worse     = $summary.baseline.worse
+            Same      = $summary.baseline.same
+        }
+    }
     Chart            = $summary.chart
     TicksFile        = $summary.ticks_file
 }
