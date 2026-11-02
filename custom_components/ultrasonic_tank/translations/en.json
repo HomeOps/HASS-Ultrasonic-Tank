@@ -1,0 +1,62 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Ultrasonic tank",
+        "description": "Point this at the RAW (unfiltered) distance sensor. A filtered sensor breaks the model.",
+        "data": {
+          "name": "Name",
+          "raw_entity": "Raw distance sensor (m)",
+          "capacity_l": "Capacity at 100 % (L)",
+          "floor_m": "Distance when empty (m)",
+          "full_m": "Distance at 100 % (m)"
+        }
+      }
+    },
+    "error": {
+      "floor_not_below_full": "The empty distance must be at least 0.1 m greater than the full distance."
+    },
+    "abort": {
+      "already_configured": "This raw sensor already has a tank model."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Tank model",
+        "data": {
+          "capacity_l": "Capacity at 100 % (L)",
+          "floor_m": "Distance when empty (m)",
+          "full_m": "Distance at 100 % (m)",
+          "drain_coefficient": "Drain coefficient b (Torricelli)",
+          "max_fill_pct_per_min": "Fastest fill (%/min)",
+          "noise_m": "Per-frame noise (m)",
+          "max_accel_pct_per_min2": "Largest change in velocity (%/min²)",
+          "velocity_tau_min": "Velocity smoothing (min)",
+          "reflector_m": "Stationary reflector distance (m, 0 = none)",
+          "reflector_half_width_m": "Reflector half width (m)",
+          "low_water_pct": "Low-water threshold (%)",
+          "low_water_max_coast_min": "Low water: surface must be seen within (min)",
+          "low_water_delay_min": "Low water: delay before ON (min)",
+          "bootstrap_hours": "First start: history to replay (h)"
+        }
+      }
+    },
+    "error": {
+      "floor_not_below_full": "The empty distance must be at least 0.1 m greater than the full distance."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "volume": { "name": "Volume" },
+      "level": { "name": "Level" },
+      "net_flow": { "name": "Net flow" },
+      "flow_change": { "name": "Flow change" },
+      "surface_distance": { "name": "Surface distance" }
+    },
+    "binary_sensor": {
+      "surface_locked": { "name": "Surface locked" },
+      "low_water": { "name": "Low water" }
+    }
+  }
+}

@@ -1,0 +1,176 @@
+# Water tank sensor: MB7851 ultrasonic on an M5 Atom Lite.
+#
+# The device publishes the RAW distance only, one state per frame. The level
+# model (volume L, net flow L/min, change in flow L/min^2, low water) runs in
+# Home Assistant: the ultrasonic_tank integration in this repo.
+#
+# Why the model is not on the device: it needs its state across restarts (a
+# few minutes of frames cannot seed it - they can be 100 % reflector on an
+# empty tank), HA keeps that state without flash writes, and the model was
+# validated on HA's recorded raw history, which is exactly what it sees there.
+#
+# The two alarms that do not need the model (overflow, sensor fault) stay here.
+substitutions:
+  # Fault thresholds on the RAW distance, metres.
+  # overflow_distance_m: water closer than this = overfull, or the sensor
+  #   dropped onto something.
+  # no_target_distance_m: farther than this = no target (sensor knocked askew
+  #   or fallen). Sits past the tank floor (~2.05 m), far below the sensor's
+  #   6.5 m no-target code.
+  overflow_distance_m: "0.15"
+  no_target_distance_m: "2.50"
+
+esphome:
+  name: water-tank-sensor
+  friendly_name: Water Tank Sensor
+
+esp32:
+  board: m5stack-atom
+  framework:
+    type: arduino
+
+logger:
+  level: DEBUG
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Static IP: mDNS does not cross the site link, so the builder reaches the
+  # device by a fixed address.
+  manual_ip:
+    static_ip: 192.168.81.229
+    gateway: 192.168.81.1
+    subnet: 255.255.255.0
+  ap:
+    ssid: !secret ap_ssid
+    password: !secret ap_password
+
+captive_portal:
+
+# MB7851-B36 (XL-TankSensor-WRMT) serial build.
+#
+# Pin order confirmed by multimeter: with the engraved "MB7851-B36" label
+# reading right-side up, pins run 1..7 left to right (Pin 7 = rightmost).
+# Wire into the M5 Atom Lite bottom 5-pin header (NOT the Grove port):
+#
+#   Sensor Pin 5  TX  (3rd from right) -> M5 header  G33   (ESP32 UART RX)
+#   Sensor Pin 6  V+  (2nd from right) -> M5 header  3V3   (3.3 V, NOT 5 V)
+#   Sensor Pin 7  GND (rightmost)      -> M5 header  GND
+#
+# 3.3 V supply keeps the sensor's TX line at 0-3.3 V, safe for GPIO33.
+# Pin 4 (RX/trigger) left open -> sensor free-runs and auto-transmits.
+#
+# Frame format: the WRMT variant emits "Rnnnn Tnnn\r" - a distance field (mm)
+# and a TEACH-CONFIDENCE field (not temperature). ESPHome's hrxl_maxsonar_wr
+# only parses the plain "Rnnnn\r" frame, so it is parsed here instead.
+uart:
+  id: maxbotix_uart
+  rx_pin: GPIO33
+  baud_rate: 9600
+  debug:
+    direction: RX
+    dummy_receiver: true        # no other component reads this UART
+    after:
+      delimiter: "\r"           # one full frame per sequence call
+    sequence:
+      - lambda: |-
+          // Reject ONLY structurally-corrupt frames (line noise). EVERY
+          // well-formed reading is published, including ~50 mm (water or an
+          // object at the sensor) and ~6500 mm (no target): those are the
+          // fault signals for the alarms below.
+          if (bytes.size() < 5 || bytes[0] != 'R')
+            return;
+          int mm = 0;
+          for (int i = 1; i <= 4; i++) {
+            if (bytes[i] < '0' || bytes[i] > '9')
+              return;
+            mm = mm * 10 + (bytes[i] - '0');
+          }
+          id(tank_distance_raw).publish_state(mm / 1000.0f);
+
+          // Optional teach-confidence field: ' ' 'T' + 3 digits (0-100).
+          // Parsed AFTER the distance, so a malformed field never costs a reading.
+          if (bytes.size() < 10 || bytes[5] != ' ' || bytes[6] != 'T')
+            return;
+          int t = 0;
+          for (int i = 7; i <= 9; i++) {
+            if (bytes[i] < '0' || bytes[i] > '9')
+              return;
+            t = t * 10 + (bytes[i] - '0');
+          }
+          id(sensor_teach_confidence).publish_state(t);
+
+sensor:
+  # UNFILTERED distance, one state per frame: the model's ONLY input.
+  # Never add a filter here - the model depends on every echo, including the
+  # wrong ones, and a filtered stream breaks it.
+  - platform: template
+    name: "Tank Distance Raw"
+    id: tank_distance_raw
+    unit_of_measurement: "m"
+    device_class: distance
+    accuracy_decimals: 3
+    state_class: measurement
+
+  # Teach confidence (0-100). DO NOT gate readings on it: measured over 5 days
+  # it is the wrong way round - T=0 is the resting state and pairs with the
+  # cleanest data; 0->100 ramps are re-teach cycles AFTER the level moves.
+  - platform: template
+    name: "Sensor Teach Confidence"
+    id: sensor_teach_confidence
+    unit_of_measurement: "%"
+    icon: "mdi:tune-vertical"
+    accuracy_decimals: 0
+    state_class: measurement
+    entity_category: diagnostic
+
+  - platform: wifi_signal
+    name: "Wi-Fi Signal"
+    update_interval: 60s
+    entity_category: diagnostic
+
+binary_sensor:
+  # Overflow / sensor dropped onto something: 60 s CONTINUOUSLY closer than
+  # overflow_distance_m (fill splash reads that close only in short bursts).
+  - platform: template
+    name: "Water Tank Overflow Risk"
+    device_class: problem
+    lambda: |-
+      if (isnan(id(tank_distance_raw).state)) return {};
+      return id(tank_distance_raw).state < ${overflow_distance_m};
+    filters:
+      - delayed_on: 60s
+
+  # No target: sensor knocked askew or fallen off.
+  - platform: template
+    name: "Water Tank Sensor Fault"
+    device_class: problem
+    lambda: |-
+      if (isnan(id(tank_distance_raw).state)) return {};
+      return id(tank_distance_raw).state > ${no_target_distance_m};
+    filters:
+      - delayed_on: 30s
+
+# M5 Atom Lite built-in RGB NeoPixel (GPIO27)
+light:
+  - platform: neopixelbus
+    type: GRB
+    variant: WS2812
+    pin: GPIO27
+    num_leds: 1
+    name: "Status LED"
+    restore_mode: ALWAYS_OFF
+    internal: true
+
+button:
+  - platform: restart
+    name: "Restart"
+    entity_category: diagnostic

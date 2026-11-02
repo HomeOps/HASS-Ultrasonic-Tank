@@ -1,0 +1,16 @@
+{
+  "domain": "ultrasonic_tank",
+  "name": "Ultrasonic Tank",
+  "version": "0.1.0",
+  "documentation": "https://github.com/HomeOps/HASS-Ultrasonic-Tank",
+  "issue_tracker": "https://github.com/HomeOps/HASS-Ultrasonic-Tank/issues",
+  "iot_class": "calculated",
+  "integration_type": "helper",
+  "config_flow": true,
+  "requirements": [],
+  "dependencies": [],
+  "after_dependencies": ["recorder"],
+  "codeowners": [
+    "@ocalvo"
+  ]
+}
