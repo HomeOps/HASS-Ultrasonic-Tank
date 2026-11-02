@@ -17,7 +17,11 @@ regime.  The surface, however, obeys kinematics:
 
 Every frame is checked against the LAST VALID frame (position, velocity and
 timestamp).  A frame that breaks the velocity or the acceleration cap is a
-reflection and is discarded.  The published level integrates a velocity clamped
+reflection and is discarded.  The rise allowance stops growing after
+``max_rise_gap_s`` unseen: a larger rise is accepted only when recent frames
+cover the distances in between (a fill sweeps through them, a near echo does
+not), or after ``rise_support_timeout_s`` blind, so a missed fill never latches.
+The published level integrates a velocity clamped
 to the same envelope, so it never teleports.  While the surface is not visible
 the estimate coasts along the last *drain* velocity; it never invents a fill.
 
@@ -51,6 +55,11 @@ class TankParameters:
     lock_window_s: float = 120.0            # a frame this recent = surface locked
     flow_window_s: float = 120.0            # trailing mean for net flow
     change_window_s: float = 300.0          # trailing mean for change in flow
+    max_rise_gap_s: float = 120.0           # rise allowance stops growing after this long unseen; <= 0 = unlimited
+    rise_support_window_s: float = 1800.0   # a larger rise needs frames between, seen this recently
+    rise_support_bin_m: float = 0.05        # the gap is checked in bins this wide
+    rise_support_fraction: float = 0.6      # share of bins that must hold a frame
+    rise_support_timeout_s: float = 3600.0  # blind longer than this: the support rule is lifted, so a missed fill cannot latch
 
     @property
     def span_m(self) -> float:
@@ -109,6 +118,7 @@ class TankModel:
             self._restore(state)
         self._flow: deque[float] = deque(self._s.flow_samples, maxlen=self._window(self.params.flow_window_s))
         self._change: deque[float] = deque(self._s.change_samples, maxlen=self._window(self.params.change_window_s))
+        self._recent: deque[tuple[float, float]] = deque()   # (time, distance) of valid frames, for rise support
 
     # ------------------------------------------------------------------ frames
     def add_frame(self, time: float, distance_m: float) -> bool:
@@ -120,6 +130,10 @@ class TankModel:
             s.last_valid = time
             return False
         x = min(distance_m, p.floor_m)      # beyond-floor echoes are the floor
+        if p.max_rise_gap_s > 0:
+            self._recent.append((time, x))
+            while self._recent and self._recent[0][0] < time - p.rise_support_window_s:
+                self._recent.popleft()
         if (p.reflector_m > 0
                 and s.surface_m > p.reflector_m + p.reflector_half_width_m + 0.05
                 and abs(x - p.reflector_m) < p.reflector_half_width_m):
@@ -136,6 +150,11 @@ class TankModel:
 
         if not (s.surface_m - fill_max * dt - p.noise_m <= x <= s.surface_m + drain_max * dt + p.noise_m):
             return False                    # velocity cap
+        if (p.max_rise_gap_s > 0
+                and dt * 60.0 < p.rise_support_timeout_s    # blind this long: fall back, never latch
+                and x < s.surface_m - fill_max * min(dt, p.max_rise_gap_s / 60.0) - p.noise_m
+                and not self._rise_supported(x, s.surface_m)):
+            return False                    # a rise after a long gap must have been seen on the way
         predicted = s.surface_m + s.velocity_m_per_min * dt
         if abs(x - predicted) > p.noise_m + 0.5 * accel_max * dt * dt:
             return False                    # acceleration cap
@@ -200,6 +219,21 @@ class TankModel:
         known = {k: v for k, v in state.items() if k in _State.__dataclass_fields__}
         self._s = _State(**{"surface_m": self.params.floor_m, **known})
         self._s.surface_m = min(max(self._s.surface_m, self.params.full_m), self.params.floor_m)
+
+    def _rise_supported(self, target_m: float, surface_m: float) -> bool:
+        """True when recent frames cover the distances between the surface and a closer target.
+
+        A real fill sweeps the surface through every distance on the way up, so
+        frames land in between.  A multipath echo appears at its own distance
+        with nothing in between.
+        """
+        p = self.params
+        bins = max(1, int(math.ceil((surface_m - target_m) / p.rise_support_bin_m)))
+        seen = set()
+        for _, x in self._recent:
+            if target_m < x < surface_m:
+                seen.add(min(int((surface_m - x) / p.rise_support_bin_m), bins - 1))
+        return len(seen) / bins >= p.rise_support_fraction
 
     def _window(self, seconds: float, tick_s: float = 10.0) -> int:
         return max(1, int(round(seconds / tick_s)))
