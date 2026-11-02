@@ -36,7 +36,14 @@ MODEL_PATH = REPO / "custom_components" / "ultrasonic_tank" / "model.py"
 RAW_ENTITY = "sensor.driveway_water_tank_sensor_tank_distance_raw"
 REFERENCE_ENTITY = "sensor.aboveground_water_tank_level"
 LIVE_ENTITY = "sensor.water_tank_level"
-TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"     # legacy TimeUtc column
+
+
+def parse_time(row: dict) -> float:
+    """Epoch seconds of a recorded row: ``Time`` is local ISO 8601 with offset; ``TimeUtc`` is the old UTC form."""
+    if "Time" in row:
+        return datetime.fromisoformat(row["Time"]).timestamp()
+    return datetime.strptime(row["TimeUtc"], TIME_FORMAT).replace(tzinfo=timezone.utc).timestamp()
 INFLOW_THRESHOLD_LPM = 20.0
 INFLOW_MERGE_GAP_S = 300.0
 SAME_WITHIN_PTS = 1.0               # a comparison closer than this counts as "same"
@@ -126,7 +133,7 @@ def load_series(folder: Path, from_day: date | None, to_day: date | None, entiti
                     value = float(row["State"])
                 except ValueError:
                     continue            # unavailable / unknown
-                when = datetime.strptime(row["TimeUtc"], TIME_FORMAT).replace(tzinfo=timezone.utc).timestamp()
+                when = parse_time(row)
                 series[role].append((when, value))
     for points in series.values():
         points.sort()
@@ -273,11 +280,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.ticks:
         with open(args.ticks, "w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
-            writer.writerow(["TimeUtc", "LevelPct", "VolumeL", "NetFlowLpm", "FlowChangeLpm2", "SurfaceM", "SurfaceLocked", "ReferencePct"])
+            writer.writerow(["Time", "LevelPct", "VolumeL", "NetFlowLpm", "FlowChangeLpm2", "SurfaceM", "SurfaceLocked", "ReferencePct"])
             for r in readings:
                 ref = value_at(ref_times, ref_values, r.time)
                 writer.writerow([
-                    datetime.fromtimestamp(r.time, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    datetime.fromtimestamp(r.time, local).isoformat(timespec="seconds"),
                     round(r.level_pct, 3), round(r.volume_l, 1), round(r.net_flow_lpm, 2), round(r.flow_change_lpm2, 3),
                     round(r.surface_m, 4), int(r.surface_locked), "" if ref is None else round(ref, 2),
                 ])
