@@ -106,7 +106,8 @@ def build_parameters(model_module, overrides: list[str]):
 
 
 def load_series(folder: Path, from_day: date | None, to_day: date | None, entities: dict[str, str]) -> dict[str, list[tuple[float, float]]]:
-    files = sorted(folder.glob("*.csv"))
+    # Only the daily recordings (YYYY-MM-DD.csv); annotations and other files differ in format.
+    files = sorted(f for f in folder.glob("????-??-??.csv"))
     if from_day:
         files = [f for f in files if f.stem >= from_day.isoformat()]
     if to_day:
