@@ -37,6 +37,8 @@ RAW_ENTITY = "sensor.driveway_water_tank_sensor_tank_distance_raw"
 REFERENCE_ENTITY = "sensor.aboveground_water_tank_level"
 LIVE_ENTITY = "sensor.water_tank_level"
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"     # legacy TimeUtc column
+ANNOTATIONS_FILE = "reference-annotations.csv"
+ANNOTATION_STEP_S = 15 * 60         # an owner truth span is scored every 15 min
 
 
 def parse_time(row: dict) -> float:
@@ -91,6 +93,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--param", action="append", default=[], metavar="NAME=VALUE", help="override a TankParameters field, e.g. full_m=0.23 (repeatable)")
     parser.add_argument("--compare", action="store_true", help="also replay a baseline and compare")
     parser.add_argument("--baseline-ref", metavar="TAG", help="baseline = model.py from this git tag/commit (implies --compare), e.g. v0.2.0")
+    parser.add_argument("--no-annotations", action="store_true", help="ignore reference-annotations.csv (owner truth spans)")
     parser.add_argument("--baseline-param", action="append", default=[], metavar="NAME=VALUE", help="override a field for the baseline only (repeatable)")
     parser.add_argument("--zoom-from", type=datetime.fromisoformat, help="chart: local start of a zoom panel (YYYY-MM-DDTHH:MM)")
     parser.add_argument("--zoom-to", type=datetime.fromisoformat, help="chart: local end of the zoom panel")
@@ -184,15 +187,46 @@ def score(errors: list[float]) -> dict | None:
     }
 
 
-def evaluate(model_module, params, frames, reference, tick_s, local):
-    """Replay once; return the readings and (time, signed error) at every reference sample."""
+def load_annotations(folder: Path, first: float, last: float) -> list[dict]:
+    """Owner truth spans from reference-annotations.csv, clipped to the replayed frames."""
+    path = folder / ANNOTATIONS_FILE
+    if not path.exists():
+        return []
+    spans = []
+    with open(path, newline="", encoding="utf-8-sig") as handle:
+        for row in csv.DictReader(handle):
+            start = datetime.fromisoformat(row["Start"]).timestamp()
+            end = datetime.fromisoformat(row["End"]).timestamp()
+            if end < first or start > last:
+                continue
+            spans.append({"start": max(start, first), "end": min(end, last), "min": float(row["MinPct"]), "max": float(row["MaxPct"]), "source": row["Source"]})
+    return spans
+
+
+def truth_samples(reference: list[tuple[float, float]], annotations: list[dict]) -> list[tuple[float, float, float]]:
+    """(time, low, high) truth: a pressure sample is a point; an owner span is sampled every ANNOTATION_STEP_S."""
+    truth = [(t, v, v) for t, v in reference]
+    for span in annotations:
+        t = span["start"]
+        while t <= span["end"]:
+            truth.append((t, span["min"], span["max"]))
+            t += ANNOTATION_STEP_S
+    truth.sort()
+    return truth
+
+
+def evaluate(model_module, params, frames, truth, tick_s, local):
+    """Replay once; return the readings and (time, signed error) at every truth sample.
+
+    The error is the distance from the published level to the truth range (zero inside it)."""
     readings = replay(model_module, params, frames, tick_s)
     tick_times = [r.time for r in readings]
     errors = []
-    for when, ref_pct in reference:
+    for when, low, high in truth:
         reading = value_at(tick_times, readings, when)
         if reading is not None:
-            errors.append((when, reading.level_pct - ref_pct))
+            level = reading.level_pct
+            errors.append((when, level - min(max(level, low), high)))
     by_day: dict[str, list[float]] = {}
     for when, error in errors:
         by_day.setdefault(datetime.fromtimestamp(when, local).date().isoformat(), []).append(error)
@@ -212,8 +246,10 @@ def main(argv: list[str] | None = None) -> int:
     span = args.reference_full - args.reference_empty
     reference = [(t, (v - args.reference_empty) / span * 100.0) for t, v in series["reference"]]
     local = timezone(timedelta(hours=args.utc_offset))
+    annotations = [] if args.no_annotations else load_annotations(folder, frames[0][0], frames[-1][0])
+    truth = truth_samples(reference, annotations)
 
-    readings, errors, days = evaluate(model_module, params, frames, reference, args.tick, local)
+    readings, errors, days = evaluate(model_module, params, frames, truth, args.tick, local)
 
     inflows = []
     for reading in readings:
@@ -237,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
         "frames": len(frames),
         "ticks": len(readings),
         "reference_samples": len(reference),
+        "annotation_samples": len(truth) - len(reference),
         "parameters": {f.name: getattr(params, f.name) for f in fields(params)},
         "overrides": args.param,
         "score": score([e for _, e in errors]),
@@ -259,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.compare or args.baseline_ref:
         base_module = load_model(args.baseline_ref) if args.baseline_ref else model_module
         base_params = build_parameters(base_module, args.baseline_param)
-        base_readings, base_errors, base_days = evaluate(base_module, base_params, frames, reference, args.tick, local)
+        base_readings, base_errors, base_days = evaluate(base_module, base_params, frames, truth, args.tick, local)
         better = worse = 0
         for (_, b), (_, c) in zip(base_errors, errors):
             if abs(c) < abs(b) - SAME_WITHIN_PTS:
@@ -294,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
         zoom = None
         if args.zoom_from and args.zoom_to:
             zoom = (args.zoom_from.replace(tzinfo=local), args.zoom_to.replace(tzinfo=local))
-        draw_chart(args.chart, readings, errors, baseline, reference, frames, params, local, summary, zoom)
+        draw_chart(args.chart, readings, errors, baseline, reference, annotations, frames, params, local, summary, zoom)
         summary["chart"] = str(args.chart)
 
     json.dump(summary, sys.stdout, indent=2)
@@ -320,7 +357,7 @@ def with_gaps(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
     return out
 
 
-def draw_chart(path: Path, readings, errors, baseline, reference, frames, params, local, summary, zoom) -> None:
+def draw_chart(path: Path, readings, errors, baseline, reference, annotations, frames, params, local, summary, zoom) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.dates as mdates
@@ -354,11 +391,15 @@ def draw_chart(path: Path, readings, errors, baseline, reference, frames, params
                 lo, hi = (z.timestamp() for z in zoom)
                 raw = [(t, (params.floor_m - d) / params.span_m * 100.0) for t, d in frames[::2] if lo <= t <= hi]
                 ax.scatter([to_dt(t) for t, _ in raw], [v for _, v in raw], s=1.0, color=RAW_DOTS, label="raw ultrasonic (dim dots, the only model input)", rasterized=True)
+            for i, span in enumerate(annotations):
+                ax.fill_between([to_dt(span["start"]), to_dt(span["end"])], span["min"], span["max"] + 2, facecolor="none", edgecolor="white",
+                                hatch="////", lw=0.8, alpha=0.8, zorder=1,
+                                label=f"TRUTH, {span['source']}: {span['min']:.0f}-{span['max']:.0f} % (hatched band)" if i == 0 else None)
             if baseline:
                 b = baseline["readings"][::step]
-                ax.plot([to_dt(r.time) for r in b], [r.level_pct for r in b], color=BASELINE, lw=2.0, ls=DASHED, label=base_label)
+                ax.plot([to_dt(r.time) for r in b], [r.level_pct for r in b], color=BASELINE, lw=2.0, ls=DASHED, label=base_label, zorder=3)
             c = readings[::step]
-            ax.plot([to_dt(r.time) for r in c], [r.level_pct for r in c], color=CANDIDATE, lw=2.6, label=cand_label)
+            ax.plot([to_dt(r.time) for r in c], [r.level_pct for r in c], color=CANDIDATE, lw=2.6, label=cand_label, zorder=4)
             ax.plot([to_dt(t) for t, _ in reference], [v for _, v in reference], "D", color="white", mfc=BACKGROUND, mew=1.1, ms=4, label=truth_label)
             ax.set_ylim(-5, 110)
             ax.set_ylabel("level %")
