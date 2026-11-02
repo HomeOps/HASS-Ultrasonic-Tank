@@ -22,24 +22,16 @@ also exactly what the integration receives, so a replay sees the same frames.
 
 | Entity | Role |
 |---|---|
+Only two instruments are recorded, nothing else:
+
+| Entity | Role |
+|---|---|
 | `sensor.driveway_water_tank_sensor_tank_distance_raw` | **Model input.** Raw ultrasonic distance, m |
-| `sensor.driveway_water_tank_sensor_sensor_teach_confidence` | Sensor teach confidence, % (not a usable gate) |
 | `sensor.aboveground_water_tank_pressure` | **Validation only.** Hydrostatic sensor, hPa. Sparse, often `unavailable` |
 | `sensor.aboveground_water_tank_level` | **Validation only.** The same pressure sensor as a %. Adjust it with 5 % → empty, 80 % → full |
-| `sensor.water_tank_level` / `_volume` / `_net_flow` | What the integration published live (%, L, L/min) |
-| `sensor.water_tank_surface_distance` | The integration's accepted surface, m |
-| `binary_sensor.water_tank_surface_locked` / `_low_water` | The integration's lock and alarm states |
 
 The pressure sensor is the independent reference. **It is never a model
 input,** and it will be retired.
-
-Also recorded, for validation and context only (never model inputs): the pump
-switch's power (`switch.driveway_water_level_switch`, `..._electric_consumption_w/a/v/kwh`),
-the pressure device's `sensor.aboveground_water_tank_distance` / `_volume` /
-`_level_direction`, `binary_sensor.main_tank_water_low` / `main_water_tank_connection`,
-`sensor.main_tank_water_level_sensor_distance_max`, and the sensor's
-`..._overflow_risk` / `..._sensor_fault` flags. `sensor.aboveground_water_tank_level_by_distance`
-is deliberately not recorded.
 
 ## Hand-entered truth: `reference-annotations.csv`
 
@@ -61,8 +53,8 @@ inside the range has no error, outside it the error is the distance to the range
 
 ## Long-term statistics: `statistics/`
 
-HA's statistics for the raw sensor, the pressure level and the integration's
-level, recovered from the recorder (columns `StartUtc, StatisticId, Mean, Min, Max`):
+HA's statistics for the raw sensor and the pressure level (the hPa entity has
+no statistics in HA), recovered from the recorder (columns `StartUtc, StatisticId, Mean, Min, Max`):
 
 - `statistics/hour/YYYY-MM.csv`: hourly, raw since 2026-07-26 and pressure
   since 2026-07-31. HA keeps these forever.
