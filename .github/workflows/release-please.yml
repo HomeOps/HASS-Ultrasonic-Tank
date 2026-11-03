@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  statuses: write
 
 jobs:
   release-please:
@@ -19,26 +20,66 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Auto-release (owner, 2026-11-02): merge the open release PR right away. It is
-      # found by its label, because release-please's `pr` output is empty when the PR
-      # already existed and did not change. A merge made with GITHUB_TOKEN does not
-      # start another workflow run, so release-please runs again below to publish.
-      - name: Merge the release PR
-        id: merge
+      # Auto-release (owner, 2026-11-02): merge the open release PR right away, but only
+      # when the tests pass on it. It is found by its label, because release-please's
+      # `pr` output is empty when the PR already existed and did not change.
+      - name: Find the release PR
+        id: find
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --label "autorelease: pending" --json number --jq '.[0].number // empty')
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --label "autorelease: pending" --json number,headRefOid --jq '.[0] // empty | "\(.number) \(.headRefOid)"')
           if [ -z "$pr" ]; then
             echo "No open release PR."
-            echo "merged=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          gh pr merge "$pr" --squash --delete-branch --repo "$GITHUB_REPOSITORY"
-          echo "merged=true" >> "$GITHUB_OUTPUT"
+          echo "number=${pr% *}" >> "$GITHUB_OUTPUT"
+          echo "sha=${pr#* }" >> "$GITHUB_OUTPUT"
 
+      # main requires the `test` check before a merge. GitHub runs no CI on a PR opened
+      # with GITHUB_TOKEN, so the same tests as ci.yml run here, on the release PR's
+      # head, and their result is posted as its `test` status.
+      - name: Check out the release PR
+        if: ${{ steps.find.outputs.number }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.find.outputs.sha }}
+
+      - name: Set up Python
+        if: ${{ steps.find.outputs.number }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Run tests on the release PR
+        id: test
+        if: ${{ steps.find.outputs.number }}
+        run: |
+          pip install -r requirements_test.txt
+          pytest
+
+      - name: Post the test result on the release PR
+        if: ${{ always() && steps.find.outputs.number }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RESULT: ${{ steps.test.outcome == 'success' && 'success' || 'failure' }}
+        run: |
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/${{ steps.find.outputs.sha }}" \
+            -f state="$RESULT" -f context=test -f description="pytest on the release PR ($RESULT)" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      - name: Merge the release PR
+        id: merge
+        if: ${{ steps.test.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge "${{ steps.find.outputs.number }}" --squash --delete-branch --repo "$GITHUB_REPOSITORY"
+
+      # A merge made with GITHUB_TOKEN does not start another workflow run, so
+      # release-please runs again here to tag and publish the release.
       - name: Publish the release
-        if: ${{ steps.merge.outputs.merged == 'true' }}
+        if: ${{ steps.merge.outcome == 'success' }}
         uses: google-github-actions/release-please-action@v4.1.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
