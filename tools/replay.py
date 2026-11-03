@@ -343,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
 BACKGROUND = "#111418"
 CANDIDATE = "#56B4E9"               # Okabe-Ito sky blue, bright on dark
 BASELINE = "#9a9a9a"
+BASELINE_OFFSET_PTS = 4.0           # the baseline is drawn this much higher, so it never hides NEW
 RAW_DOTS = "#3a3f47"
 DASHED = (0, (6, 3))
 
@@ -375,6 +376,7 @@ def draw_chart(path: Path, readings, errors, baseline, reference, annotations, f
         cand_label += " [" + ", ".join(summary["overrides"]) + "]"
     base_ref = baseline and summary["baseline"]["ref"]
     base_label = f"BASELINE: {base_ref} release (grey dashed)" if base_ref else "BASELINE (grey dashed)"
+    base_label += f", drawn {BASELINE_OFFSET_PTS:.0f} pts higher so it never hides NEW"
     if baseline and summary["baseline"]["overrides"]:
         base_label += " [" + ", ".join(summary["baseline"]["overrides"]) + "]"
     truth_label = "TRUTH: pressure sensor (hollow diamonds)"
@@ -388,7 +390,7 @@ def draw_chart(path: Path, readings, errors, baseline, reference, annotations, f
                      x=0.01, y=0.995, ha="left", fontsize=15, fontweight="bold")
         fig.text(0.01, 0.948 if len(panels) == 2 else 0.962,
                  f"At the {s['samples']} truth points, NEW is better at {bl['better']}, worse at {bl['worse']}, the same at {bl['same']}.  "
-                 f"Where the dashed line runs on top of the solid one, both versions agree.\n"
+                 f"Where the dashed line runs parallel, {BASELINE_OFFSET_PTS:.0f} pts above the solid one, both versions agree.\n"
                  f"Replayed from empty over {summary['start']} to {summary['end']} Costa Rica time.",
                  ha="left", va="top", fontsize=10.5)
     else:
@@ -408,11 +410,11 @@ def draw_chart(path: Path, readings, errors, baseline, reference, annotations, f
                                 label=f"TRUTH: {span['source']} says {span['min']:.0f}-{span['max']:.0f} % (hatched band)" if i == 0 else None)
             if baseline:
                 b = baseline["readings"][::step]
-                ax.plot([to_dt(r.time) for r in b], [r.level_pct for r in b], color=BASELINE, lw=1.6, ls=DASHED, label=base_label, zorder=5)
+                ax.plot([to_dt(r.time) for r in b], [r.level_pct + BASELINE_OFFSET_PTS for r in b], color=BASELINE, lw=1.6, ls=DASHED, label=base_label, zorder=5)
             c = readings[::step]
             ax.plot([to_dt(r.time) for r in c], [r.level_pct for r in c], color=CANDIDATE, lw=3.0, label=cand_label, zorder=4)
-            ax.plot([to_dt(t) for t, _ in reference], [v for _, v in reference], "D", color="white", mfc=BACKGROUND, mew=1.1, ms=4, label=truth_label)
-            ax.set_ylim(-5, 110)
+            ax.plot([to_dt(t) for t, _ in reference], [v for _, v in reference], "D", ls="none", color="white", mfc=BACKGROUND, mew=1.1, ms=4, label=truth_label, zorder=6)
+            ax.set_ylim(-5, 115)
             ax.set_ylabel("level %")
             if panel == "zoom":
                 ax.set_xlim(*zoom)
@@ -428,7 +430,7 @@ def draw_chart(path: Path, readings, errors, baseline, reference, annotations, f
         else:
             if baseline:
                 be = with_gaps([(t, abs(e)) for t, e in baseline["errors"]])
-                ax.plot([to_dt(t) for t, _ in be], [e for _, e in be], color=BASELINE, lw=1.6, ls=DASHED, label=base_label, zorder=5)
+                ax.plot([to_dt(t) for t, _ in be], [e + BASELINE_OFFSET_PTS for _, e in be], color=BASELINE, lw=1.6, ls=DASHED, label=base_label, zorder=5)
             ce = with_gaps([(t, abs(e)) for t, e in errors])
             ax.plot([to_dt(t) for t, _ in ce], [e for _, e in ce], color=CANDIDATE, lw=3.0, label=cand_label, zorder=4)
             ax.axhline(BIG_ERROR_PTS, color="white", lw=0.8, ls=":")
