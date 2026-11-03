@@ -15,5 +15,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: google-github-actions/release-please-action@v4.1.1
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Auto-release (owner, 2026-11-02): merge the release PR as soon as it is opened
+      # or updated. A merge made with GITHUB_TOKEN does not start another workflow run,
+      # so release-please runs again below to tag and publish the release.
+      - name: Merge the release PR
+        id: merge
+        if: ${{ steps.release.outputs.pr }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge "${{ fromJSON(steps.release.outputs.pr).number }}" --squash --delete-branch --repo "${{ github.repository }}"
+
+      - name: Publish the release
+        if: ${{ steps.merge.outcome == 'success' }}
+        uses: google-github-actions/release-please-action@v4.1.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
