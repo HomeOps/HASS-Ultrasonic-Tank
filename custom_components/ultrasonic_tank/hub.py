@@ -41,7 +41,11 @@ def entry_settings(entry: ConfigEntry) -> dict[str, Any]:
 
 
 def build_parameters(settings: dict[str, Any]) -> TankParameters:
-    return TankParameters(**{key: float(settings.get(key, default)) for key, default in MODEL_KEYS.items()})
+    offset = dt_util.now().utcoffset()          # HA's time zone, for the model's local fill hours
+    return TankParameters(
+        **{key: float(settings.get(key, default)) for key, default in MODEL_KEYS.items()},
+        utc_offset_h=offset.total_seconds() / 3600.0 if offset else 0.0,
+    )
 
 
 def _parse_distance(state: State | None) -> float | None:

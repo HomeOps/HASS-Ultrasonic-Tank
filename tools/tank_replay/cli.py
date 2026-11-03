@@ -59,7 +59,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     model_module = load_model()
-    params = build_parameters(model_module, args.param)
+    params = build_parameters(model_module, args.param, args.utc_offset)
     folder = args.data or REPO / "data" / args.site
     series = load_series(folder, args.from_day, args.to_day,
                          {"raw": args.raw_entity, "reference": args.reference_entity, "live": args.live_entity})
@@ -80,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     baseline = None
     if args.compare or args.baseline_ref:
         base_module = load_model(args.baseline_ref) if args.baseline_ref else model_module
-        base_params = build_parameters(base_module, args.baseline_param)
+        base_params = build_parameters(base_module, args.baseline_param, args.utc_offset)
         base_readings, base_errors, base_days = evaluate(base_module, base_params, frames, truth, args.tick, local)
         baseline = {"readings": base_readings, "errors": base_errors}
         summary["baseline"] = {"ref": args.baseline_ref, "overrides": args.baseline_param,
