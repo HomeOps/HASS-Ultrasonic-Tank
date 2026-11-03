@@ -19,18 +19,26 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Auto-release (owner, 2026-11-02): merge the release PR as soon as it is opened
-      # or updated. A merge made with GITHUB_TOKEN does not start another workflow run,
-      # so release-please runs again below to tag and publish the release.
+      # Auto-release (owner, 2026-11-02): merge the open release PR right away. It is
+      # found by its label, because release-please's `pr` output is empty when the PR
+      # already existed and did not change. A merge made with GITHUB_TOKEN does not
+      # start another workflow run, so release-please runs again below to publish.
       - name: Merge the release PR
         id: merge
-        if: ${{ steps.release.outputs.pr }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr merge "${{ fromJSON(steps.release.outputs.pr).number }}" --squash --delete-branch --repo "${{ github.repository }}"
+        run: |
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --label "autorelease: pending" --json number --jq '.[0].number // empty')
+          if [ -z "$pr" ]; then
+            echo "No open release PR."
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh pr merge "$pr" --squash --delete-branch --repo "$GITHUB_REPOSITORY"
+          echo "merged=true" >> "$GITHUB_OUTPUT"
 
       - name: Publish the release
-        if: ${{ steps.merge.outcome == 'success' }}
+        if: ${{ steps.merge.outputs.merged == 'true' }}
         uses: google-github-actions/release-please-action@v4.1.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
