@@ -30,6 +30,22 @@ README.md for the physics.
 - **Nothing is persisted on the sensor device.** State lives in HA storage
   (`.storage/ultrasonic_tank.<entry_id>`).
 
+## Every model change: replay PREV vs NEXT
+
+Part of the engineering process. Before a PR that touches `model.py`:
+
+1. Run `.\tools\Invoke-TankReplay.ps1` (no arguments). It replays PREV (the
+   latest release tag, installed now) and NEXT (the working tree) from empty
+   over each fixed window in `data/cr/benchmark.json`, and scores both
+   against the truth (pressure sensor + `reference-annotations.csv`).
+2. Commit the regenerated `docs/replay-<from>-to-<to>.svg` files with the PR.
+
+A window's chart name never changes and its days are fixed, so
+`git log -p docs/replay-<from>-to-<to>.svg` shows how the model changed over
+time on exactly the same data. Never edit a window; add a new one when new
+data is worth benchmarking. Charts are dark mode and colour-blind safe (line
+style and marker, not hue), in Costa Rica time.
+
 ## Releases
 
 release-please manages releases, the same way as HASS-Smart-Climate. Use

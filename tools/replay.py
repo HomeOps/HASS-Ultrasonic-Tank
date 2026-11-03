@@ -388,14 +388,30 @@ def draw_chart(path: Path, readings, errors, baseline, reference, annotations, f
         bs, bl = summary["baseline"]["score"], summary["baseline"]
         fig.suptitle(f"PREV ({base_ref or 'baseline'}) vs NEXT (this change): mean error {bs['mean']:.1f} -> {s['mean']:.1f} pts",
                      x=0.01, y=0.995, ha="left", fontsize=15, fontweight="bold")
+        days = [f[:-4] for f in summary["files"]]
+        fig.text(0.99, 0.995, f"Days {days[0]} to {days[-1]}" if len(days) > 1 else f"Day {days[0]}",
+                 ha="right", va="top", fontsize=13, fontweight="bold")
         fig.text(0.01, 0.948 if len(panels) == 2 else 0.962,
                  f"At the {s['samples']} truth points, NEXT is better at {bl['better']}, worse at {bl['worse']}, the same at {bl['same']}.  "
                  f"Where the dashed line runs parallel, {BASELINE_OFFSET_PTS:.0f} pts above the solid one, both versions agree.\n"
                  f"Replayed from empty over {summary['start']} to {summary['end']} Costa Rica time.",
+
                  ha="left", va="top", fontsize=10.5)
     else:
         fig.suptitle(f"model.py: mean error {s['mean']:.1f} pts ({summary['start']} to {summary['end']} Costa Rica time)", x=0.01, ha="left", fontsize=15, fontweight="bold")
     step = max(1, int(60 / (readings[1].time - readings[0].time))) if len(readings) > 1 else 1
+    span_days = (readings[-1].time - readings[0].time) / 86400.0
+    x_start, x_end = to_dt(readings[0].time), to_dt(readings[-1].time)
+
+    def time_axis(ax) -> None:
+        """Day ticks for long replays, every 3-6 hours (with the date) for a window of a few days."""
+        if span_days > 4:
+            ax.xaxis.set_major_locator(mdates.DayLocator(tz=local))
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d", tz=local))
+        else:
+            ax.xaxis.set_major_locator(mdates.HourLocator(byhour=range(0, 24, 3 if span_days <= 1.5 else 6), tz=local))
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d\n%H:%M", tz=local))
+        ax.set_xlim(x_start, x_end)
 
     for ax, panel in zip(axes, panels):
         ax.grid(alpha=0.25)
@@ -422,8 +438,7 @@ def draw_chart(path: Path, readings, errors, baseline, reference, annotations, f
                 ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d %H:%M", tz=local))
             else:
                 ax.set_title("Tank level", loc="left", fontsize=12, fontweight="bold")
-                ax.xaxis.set_major_locator(mdates.DayLocator(tz=local))
-                ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d", tz=local))
+                time_axis(ax)
                 if zoom:
                     ax.axvspan(*zoom, color="white", alpha=0.07)
             ax.legend(loc="upper left", fontsize=8.5, framealpha=0.85)
@@ -436,8 +451,7 @@ def draw_chart(path: Path, readings, errors, baseline, reference, annotations, f
             ax.axhline(BIG_ERROR_PTS, color="white", lw=0.8, ls=":")
             ax.set_ylim(0, 100)
             ax.set_ylabel("error vs truth (pts)\nlower is better")
-            ax.xaxis.set_major_locator(mdates.DayLocator(tz=local))
-            ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d", tz=local))
+            time_axis(ax)
             ax.set_xlabel("Costa Rica time (no line = no truth data)")
             ax.set_title("How wrong vs the truth (lower is better)", loc="left", fontsize=12, fontweight="bold")
             ax.legend(loc="upper left", fontsize=8.5, framealpha=0.85)
