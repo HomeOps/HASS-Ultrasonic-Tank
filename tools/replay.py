@@ -15,7 +15,7 @@ colour-blind safe: series differ by line style, marker and brightness.
 
     python tools/replay.py --site cr
     python tools/replay.py --site cr --param full_m=0.23 --chart replay.png
-    python tools/replay.py --baseline-ref v0.2.0 --chart docs/replay-v0.2.0-vs-current.svg
+    python tools/replay.py --baseline-ref v0.2.0 --chart docs/replay-v0.2.0-vs-next.svg
 """
 from __future__ import annotations
 
@@ -343,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
 BACKGROUND = "#111418"
 CANDIDATE = "#56B4E9"               # Okabe-Ito sky blue, bright on dark
 BASELINE = "#9a9a9a"
-BASELINE_OFFSET_PTS = 4.0           # the baseline is drawn this much higher, so it never hides NEW
+BASELINE_OFFSET_PTS = 4.0           # PREV is drawn this much higher, so it never hides NEXT
 RAW_DOTS = "#3a3f47"
 DASHED = (0, (6, 3))
 
@@ -371,12 +371,12 @@ def draw_chart(path: Path, readings, errors, baseline, reference, annotations, f
         return datetime.fromtimestamp(when, timezone.utc)
 
     s = summary["score"]
-    cand_label = "NEW: this change (thick bright solid)" if baseline else "model.py (thick bright solid)"
+    cand_label = "NEXT: this change, not released yet (thick bright solid)" if baseline else "model.py (thick bright solid)"
     if summary["overrides"]:
         cand_label += " [" + ", ".join(summary["overrides"]) + "]"
     base_ref = baseline and summary["baseline"]["ref"]
-    base_label = f"BASELINE: {base_ref} release (grey dashed)" if base_ref else "BASELINE (grey dashed)"
-    base_label += f", drawn {BASELINE_OFFSET_PTS:.0f} pts higher so it never hides NEW"
+    base_label = f"PREV: {base_ref}, the release installed now (grey dashed)" if base_ref else "PREV (grey dashed)"
+    base_label += f", drawn {BASELINE_OFFSET_PTS:.0f} pts higher so it never hides NEXT"
     if baseline and summary["baseline"]["overrides"]:
         base_label += " [" + ", ".join(summary["baseline"]["overrides"]) + "]"
     truth_label = "TRUTH: pressure sensor (hollow diamonds)"
@@ -386,10 +386,10 @@ def draw_chart(path: Path, readings, errors, baseline, reference, annotations, f
     fig, axes = plt.subplots(len(panels), 1, figsize=(14, 4.2 * len(panels) + 0.8), gridspec_kw={"height_ratios": [ratios[p] for p in panels]})
     if baseline:
         bs, bl = summary["baseline"]["score"], summary["baseline"]
-        fig.suptitle(f"BASELINE {base_ref or ''} vs NEW (this change): mean error {bs['mean']:.1f} -> {s['mean']:.1f} pts",
+        fig.suptitle(f"PREV ({base_ref or 'baseline'}) vs NEXT (this change): mean error {bs['mean']:.1f} -> {s['mean']:.1f} pts",
                      x=0.01, y=0.995, ha="left", fontsize=15, fontweight="bold")
         fig.text(0.01, 0.948 if len(panels) == 2 else 0.962,
-                 f"At the {s['samples']} truth points, NEW is better at {bl['better']}, worse at {bl['worse']}, the same at {bl['same']}.  "
+                 f"At the {s['samples']} truth points, NEXT is better at {bl['better']}, worse at {bl['worse']}, the same at {bl['same']}.  "
                  f"Where the dashed line runs parallel, {BASELINE_OFFSET_PTS:.0f} pts above the solid one, both versions agree.\n"
                  f"Replayed from empty over {summary['start']} to {summary['end']} Costa Rica time.",
                  ha="left", va="top", fontsize=10.5)

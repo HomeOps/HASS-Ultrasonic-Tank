@@ -1,16 +1,17 @@
 <#
 .SYNOPSIS
-Replays the current model.py against the previous release over the recorded
-data in this repo, and writes the BASELINE vs NEW chart to docs/.
+Replays NEXT (this change, the working tree's model.py) against PREV (the
+latest release, the one installed now) over the recorded data in this repo,
+and writes the PREV vs NEXT chart to docs/.
 
 .DESCRIPTION
 Run with no arguments, it:
-  1. replays the working tree's model.py (NEW) and the model.py of the latest
-     release tag (BASELINE) from empty over every raw frame in data/<Site>,
-     ticking every 10 s as Home Assistant does;
+  1. replays NEXT (the working tree's model.py) and PREV (model.py of the
+     latest release tag, e.g. v0.2.0) from empty over every raw frame in
+     data/<Site>, ticking every 10 s as Home Assistant does;
   2. scores both against the truth: the pressure sensor plus the owner's
      reference-annotations.csv (scoring only, never a model input);
-  3. writes docs/replay-<tag>-vs-current.svg, the chart for the PR;
+  3. writes docs/replay-<prev tag>-vs-next.svg, the chart for the PR;
   4. returns the scores (Score, Days, Baseline with better/worse/same counts).
 
 Run it after every model change and commit the regenerated SVG with the PR.
@@ -36,9 +37,9 @@ plain defaults. The result gains a Baseline property (score, per-day table, and
 how many reference samples got better, worse or stayed the same).
 
 .PARAMETER BaselineRef
-The BASELINE: model.py from this git tag or commit. Default 'previous', the
-latest release tag. When -Chart is a directory (default docs), the chart is
-written there as replay-<tag>-vs-current.svg.
+PREV: model.py from this git tag or commit. Default 'previous', the latest
+release tag. When -Chart is a directory (default docs), the chart is written
+there as replay-<tag>-vs-next.svg.
 
 .PARAMETER NoBaseline
 Replay only the working tree, no comparison.
@@ -64,7 +65,7 @@ Write every published tick (level, volume, flow, lock, reference) to this CSV.
 Python executable. Default: python on PATH.
 
 .EXAMPLE
-# The standard run: previous release vs this change, writes docs/replay-<tag>-vs-current.svg
+# The standard run: PREV (latest release) vs NEXT (this change), writes docs/replay-<tag>-vs-next.svg
 .\tools\Invoke-TankReplay.ps1
 
 .EXAMPLE
@@ -139,7 +140,7 @@ if ($Chart -and -not $NoChart) {
     $chartPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Chart)
     if (-not $PSBoundParameters.ContainsKey('Chart')) { $null = New-Item -ItemType Directory -Force -Path $chartPath }
     if (Test-Path -LiteralPath $chartPath -PathType Container) {
-        $chartName = if ($BaselineRef) { "replay-$BaselineRef-vs-current.svg" } else { 'replay-current.svg' }
+        $chartName = if ($BaselineRef) { "replay-$BaselineRef-vs-next.svg" } else { 'replay-next.svg' }
         $chartPath = Join-Path $chartPath $chartName
     }
     $replayArgs.AddRange([string[]]@('--chart', $chartPath))
