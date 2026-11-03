@@ -106,6 +106,55 @@ def test_known_limit_fast_fill_ending_on_the_reflector_is_not_trusted():
     assert not readings[-1].surface_locked
 
 
+TRUE_LEVEL_PCT = 40.0                           # 2026-11-02 night: pressure said ~41 %
+ECHO_LEVEL_PCT = 74.0                           # ...while a steady near echo said 74 %
+DEEP_MULTIPATH_M = 0.6                          # deeper than the surface: rejected, so the model is blind
+BLIND_S = 20 * 60                               # shorter than rise_support_timeout_s
+ECHO_S = 30 * 60
+WALK_UP_TOLERANCE_PCT = 5.0
+
+
+def blind_then_echo(start: float):
+    deep = distance_for(TRUE_LEVEL_PCT) + DEEP_MULTIPATH_M
+    echo = distance_for(ECHO_LEVEL_PCT)
+    return lambda t: deep if t < start + BLIND_S else echo
+
+
+def test_near_echo_after_a_blind_spell_does_not_walk_the_level_up():
+    model, start = settled_model(TRUE_LEVEL_PCT)
+    readings = run(model, start, BLIND_S + ECHO_S, blind_then_echo(start))
+    assert readings[-1].level_pct < TRUE_LEVEL_PCT + WALK_UP_TOLERANCE_PCT
+
+
+def test_without_the_rise_rule_the_same_echo_walks_the_level_up():
+    """Control for the test above: the v0.2.0 gate let the rise allowance grow with blind time."""
+    unlimited = TankParameters(max_rise_gap_s=0.0)
+    model = TankModel(unlimited, {"surface_m": distance_for(TRUE_LEVEL_PCT), "level_pct": TRUE_LEVEL_PCT})
+    run(model, START_TIME, BLIND_S, lambda t: distance_for(TRUE_LEVEL_PCT))
+    start = START_TIME + BLIND_S
+    readings = run(model, start, BLIND_S + ECHO_S, blind_then_echo(start))
+    assert readings[-1].level_pct > ECHO_LEVEL_PCT - WALK_UP_TOLERANCE_PCT
+
+
+LOW_LEVEL_PCT = 20.0
+FILLED_LEVEL_PCT = 70.0
+SPLASH_M = 0.05                                 # closer than min_valid_m: every frame is invalid
+MISSED_FILL_BLIND_S = PARAMS.rise_support_timeout_s + 10 * 60
+CATCH_UP_S = 40 * 60
+FILL_TOLERANCE_PCT = 2.0
+
+
+def test_a_fill_missed_while_blind_is_followed_once_the_timeout_passes():
+    """The support rule must never latch: after rise_support_timeout_s blind, a far closer
+    steady surface is accepted again (at the fill cap)."""
+    model, start = settled_model(LOW_LEVEL_PCT)
+    filled = distance_for(FILLED_LEVEL_PCT)
+    readings = run(model, start, MISSED_FILL_BLIND_S + CATCH_UP_S,
+                   lambda t: SPLASH_M if t < start + MISSED_FILL_BLIND_S else filled)
+    assert readings[-1].level_pct == pytest.approx(FILLED_LEVEL_PCT, abs=FILL_TOLERANCE_PCT)
+    assert readings[-1].surface_locked
+
+
 def test_coasts_only_along_a_drain():
     model, start = settled_model(50.0)
     run(model, start, 1800, lambda t: distance_for(torricelli_level(50.0, (t - start) / 60.0)))

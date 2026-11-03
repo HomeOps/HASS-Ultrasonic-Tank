@@ -1,32 +1,69 @@
 <#
 .SYNOPSIS
-Replays the shipped Python model (model.py) over the recorded data in this
-repo and returns the score against the reference sensor.
+Replays NEXT (this change, the working tree's model.py) against PREV (the
+latest release, the one installed now) over the recorded data in this repo,
+and writes the PREV vs NEXT chart to docs/.
 
 .DESCRIPTION
-Runs tools/replay.py, which feeds every raw distance frame in data/<Site>/*.csv
-to TankModel from empty, ticking every 10 s as Home Assistant does, and scores
-the published level against the hydrostatic reference. The reference is used
-for scoring only; it never reaches the model.
+Run with no arguments, it:
+  1. for each fixed window in data/<Site>/benchmark.json, replays NEXT (the
+     working tree's model.py) and PREV (model.py of the latest release tag,
+     e.g. v0.2.0) from empty, ticking every 10 s as Home Assistant does;
+  2. scores both against the truth: the pressure sensor plus the owner's
+     reference-annotations.csv (scoring only, never a model input);
+  3. writes one chart per window, docs/replay-<from>-to-<to>.svg;
+  4. returns one result per window (Score, Days, Baseline with
+     better/worse/same counts, Window).
 
-Returns one object with the overall score, a Days table (per local day), the
-inflow events the model reported, and the parameters used.
+This is part of the engineering process for every model change: run it and
+commit the regenerated docs/replay-*.svg with the PR. A window's file name
+never changes and its days are fixed, so each file's git history shows how
+the model changed over time on the same data.
+-NoChart skips the SVG; -NoBaseline replays only the working tree.
 
 .PARAMETER Site
 Folder under data/. Default: cr.
 
 .PARAMETER From
-First UTC day file to load (yyyy-MM-dd). Default: all.
+First Costa Rica day to load (yyyy-MM-dd). Replaces the benchmark windows.
 
 .PARAMETER To
-Last UTC day file to load (yyyy-MM-dd). Default: all.
+Last Costa Rica day to load (yyyy-MM-dd). Replaces the benchmark windows.
+
+.PARAMETER AllData
+Replay every day in data/<Site> instead of the benchmark windows.
 
 .PARAMETER Parameter
 TankParameters overrides for experiments, e.g. @{ full_m = 0.23; floor_m = 2.12 }.
 The shipped model.py is not changed.
 
+.PARAMETER Baseline
+Also replay a baseline and compare: the shipped defaults plus these overrides,
+e.g. @{ max_rise_gap_s = 0 } for the v0.2.0 gate. @{} compares against the
+plain defaults. The result gains a Baseline property (score, per-day table, and
+how many reference samples got better, worse or stayed the same).
+
+.PARAMETER BaselineRef
+PREV: model.py from this git tag or commit. Default 'previous', the latest
+release tag. When -Chart is a directory (default docs), the chart is written
+there as replay.svg.
+
+.PARAMETER NoBaseline
+Replay only the working tree, no comparison.
+
+.PARAMETER NoChart
+Do not write a chart.
+
+.PARAMETER ZoomFrom
+Chart: local start of an extra zoom panel (yyyy-MM-ddTHH:mm). Needs -ZoomTo.
+
+.PARAMETER ZoomTo
+Chart: local end of the zoom panel.
+
 .PARAMETER Chart
-Write a PNG chart to this path (needs matplotlib). With -Open, open it after.
+Write a chart to this path (.png or .svg, needs matplotlib): level, optional
+zoom, and error vs the reference. Dark mode, colour-blind safe. With -Open,
+open it after.
 
 .PARAMETER TicksPath
 Write every published tick (level, volume, flow, lock, reference) to this CSV.
@@ -35,7 +72,13 @@ Write every published tick (level, volume, flow, lock, reference) to this CSV.
 Python executable. Default: python on PATH.
 
 .EXAMPLE
-.\tools\Invoke-TankReplay.ps1
+# The standard run: PREV (latest release) vs NEXT (this change) on every benchmark window,
+# writes docs/replay-<from>-to-<to>.svg
+.\tools\Invoke-TankReplay.ps1 | Format-Table Window, @{n='Prev';e={$_.Baseline.Score.mean}}, @{n='Next';e={$_.Score.mean}}
+
+.EXAMPLE
+# How the model changed over time on one window
+git log -p docs/replay-2026-11-01-to-2026-11-02.svg
 
 .EXAMPLE
 .\tools\Invoke-TankReplay.ps1 -From 2026-11-01 -Chart replay.png -Open
@@ -45,14 +88,26 @@ Python executable. Default: python on PATH.
 $base = .\tools\Invoke-TankReplay.ps1
 $test = .\tools\Invoke-TankReplay.ps1 -Parameter @{ full_m = 0.23 }
 $base.Score, $test.Score
+
+.EXAMPLE
+# Before/after chart for a model change: the working tree vs the v0.2.0 gate
+.\tools\Invoke-TankReplay.ps1 -Baseline @{ max_rise_gap_s = 0 } -ZoomFrom 2026-11-01T18:00 -ZoomTo 2026-11-02T16:30 -Chart compare.png -Open
+
 #>
 [CmdletBinding()]
 param(
     [string]$Site = 'cr',
     [string]$From,
     [string]$To,
+    [switch]$AllData,
     [hashtable]$Parameter = @{},
-    [string]$Chart,
+    [hashtable]$Baseline,
+    [string]$BaselineRef = 'previous',
+    [switch]$NoBaseline,
+    [string]$ZoomFrom,
+    [string]$ZoomTo,
+    [string]$Chart = (Join-Path (Split-Path $PSScriptRoot -Parent) 'docs'),
+    [switch]$NoChart,
     [switch]$Open,
     [string]$TicksPath,
     [string]$Python = 'python'
@@ -68,14 +123,57 @@ if (-not $pythonExe) { throw "Python not found ('$Python'). Install Python 3.11+
 $replayArgs = [System.Collections.Generic.List[string]]::new()
 $replayArgs.Add($script)
 $replayArgs.AddRange([string[]]@('--site', $Site))
+# Benchmark windows: with no -From/-To/-AllData, replay each fixed window into its
+# own stable chart, docs/replay-<from>-to-<to>.svg, so each file's history is the
+# model's history on the same days.
+$benchmarkFile = Join-Path $repoRoot (Join-Path 'data' (Join-Path $Site 'benchmark.json'))
+if (-not $AllData -and -not $From -and -not $To -and (Test-Path -LiteralPath $benchmarkFile)) {
+    $windows = @((Get-Content -LiteralPath $benchmarkFile -Raw | ConvertFrom-Json).windows)
+    foreach ($window in $windows) {
+        $windowParams = @{} + $PSBoundParameters
+        $windowParams['From'] = $window.from
+        $windowParams['To'] = $window.to
+        if ($Chart -and -not $NoChart -and -not $PSBoundParameters.ContainsKey('Chart')) {
+            $windowParams['Chart'] = Join-Path $Chart "replay-$($window.from)-to-$($window.to).svg"
+        }
+        Write-Verbose "Benchmark window $($window.from) .. $($window.to): $($window.what)"
+        $windowResult = & $PSCommandPath @windowParams
+        $windowResult | Add-Member -NotePropertyName Window -NotePropertyValue $window.what -PassThru
+    }
+    return
+}
 if ($From) { $replayArgs.AddRange([string[]]@('--from', $From)) }
 if ($To) { $replayArgs.AddRange([string[]]@('--to', $To)) }
 foreach ($name in $Parameter.Keys) {
     $value = [string]::Format([cultureinfo]::InvariantCulture, '{0}', $Parameter[$name])
     $replayArgs.AddRange([string[]]@('--param', "${name}=${value}"))
 }
-if ($Chart) {
+if ($PSBoundParameters.ContainsKey('Baseline')) {
+    $replayArgs.Add('--compare')
+    foreach ($name in $Baseline.Keys) {
+        $value = [string]::Format([cultureinfo]::InvariantCulture, '{0}', $Baseline[$name])
+        $replayArgs.AddRange([string[]]@('--baseline-param', "${name}=${value}"))
+    }
+}
+# The release tag is the default baseline, unless -Baseline (parameter overrides of
+# the working tree) was asked for instead, or -NoBaseline.
+$useRef = -not $NoBaseline -and $BaselineRef -and ($PSBoundParameters.ContainsKey('BaselineRef') -or -not $PSBoundParameters.ContainsKey('Baseline'))
+if (-not $useRef) { $BaselineRef = $null }
+if ($BaselineRef) {
+    if ($BaselineRef -eq 'previous') {
+        $BaselineRef = git -C $repoRoot describe --tags --abbrev=0
+        if ($LASTEXITCODE -ne 0 -or -not $BaselineRef) { throw 'No release tag found for -BaselineRef previous.' }
+        Write-Verbose "Baseline: latest release tag $BaselineRef"
+    }
+    $replayArgs.AddRange([string[]]@('--baseline-ref', $BaselineRef))
+}
+if ($ZoomFrom -and $ZoomTo) { $replayArgs.AddRange([string[]]@('--zoom-from', $ZoomFrom, '--zoom-to', $ZoomTo)) }
+if ($Chart -and -not $NoChart) {
     $chartPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Chart)
+    if (-not $PSBoundParameters.ContainsKey('Chart')) { $null = New-Item -ItemType Directory -Force -Path $chartPath }
+    if (Test-Path -LiteralPath $chartPath -PathType Container) {
+        $chartPath = Join-Path $chartPath $(if ($From -or $To) { "replay-$From-to-$To.svg" } else { 'replay-all.svg' })
+    }
     $replayArgs.AddRange([string[]]@('--chart', $chartPath))
 }
 if ($TicksPath) {
@@ -109,6 +207,17 @@ $result = [pscustomobject]@{
     Overrides        = @($summary.overrides)
     Parameters       = $summary.parameters
     Files            = @($summary.files)
+    Baseline         = if ($summary.baseline) {
+        [pscustomobject]@{
+            Ref       = $summary.baseline.ref
+            Overrides = @($summary.baseline.overrides)
+            Score     = $summary.baseline.score
+            Days      = @($summary.baseline.days | ForEach-Object { [pscustomobject]@{ Day = $_.day; Samples = $_.samples; Mean = $_.mean; Median = $_.median; P90 = $_.p90; Max = $_.max; Bias = $_.bias } })
+            Better    = $summary.baseline.better
+            Worse     = $summary.baseline.worse
+            Same      = $summary.baseline.same
+        }
+    }
     Chart            = $summary.chart
     TicksFile        = $summary.ticks_file
 }
