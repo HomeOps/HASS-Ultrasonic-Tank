@@ -42,7 +42,10 @@ def draw_chart(path: Path, readings, errors, baseline, reference, annotations, f
                 time_axis(ax, mdates, local, *span)
                 if zoom:
                     ax.axvspan(*zoom, color="white", alpha=0.07)
-        ax.legend(loc="upper left", fontsize=8.5, framealpha=0.85, markerscale=3)
+        legend = ax.legend(loc="upper left", fontsize=8.5, framealpha=0.85)
+        for handle in legend.legend_handles:
+            if hasattr(handle, "set_sizes"):    # the raw scatter: its 2 pt dots are unreadable in a legend
+                handle.set_sizes([18.0])
     fig.tight_layout(rect=(0, 0, 1, 0.9 if len(panels) == 2 else 0.93))
     fig.savefig(path, dpi=110, metadata=SAVE_METADATA)
     plt.close(fig)
