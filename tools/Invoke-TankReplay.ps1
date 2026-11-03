@@ -1,16 +1,20 @@
 <#
 .SYNOPSIS
-Replays the shipped Python model (model.py) over the recorded data in this
-repo and returns the score against the reference sensor.
+Replays the current model.py against the previous release over the recorded
+data in this repo, and writes the BASELINE vs NEW chart to docs/.
 
 .DESCRIPTION
-Runs tools/replay.py, which feeds every raw distance frame in data/<Site>/*.csv
-to TankModel from empty, ticking every 10 s as Home Assistant does, and scores
-the published level against the hydrostatic reference. The reference is used
-for scoring only; it never reaches the model.
+Run with no arguments, it:
+  1. replays the working tree's model.py (NEW) and the model.py of the latest
+     release tag (BASELINE) from empty over every raw frame in data/<Site>,
+     ticking every 10 s as Home Assistant does;
+  2. scores both against the truth: the pressure sensor plus the owner's
+     reference-annotations.csv (scoring only, never a model input);
+  3. writes docs/replay-<tag>-vs-current.svg, the chart for the PR;
+  4. returns the scores (Score, Days, Baseline with better/worse/same counts).
 
-Returns one object with the overall score, a Days table (per local day), the
-inflow events the model reported, and the parameters used.
+Run it after every model change and commit the regenerated SVG with the PR.
+-NoChart skips the SVG; -NoBaseline replays only the working tree.
 
 .PARAMETER Site
 Folder under data/. Default: cr.
@@ -32,9 +36,15 @@ plain defaults. The result gains a Baseline property (score, per-day table, and
 how many reference samples got better, worse or stayed the same).
 
 .PARAMETER BaselineRef
-Compare against model.py from a git tag or commit, e.g. v0.2.0, instead of the
-working tree. 'previous' resolves to the latest release tag. When -Chart is a
-directory, the chart is written there as replay-<tag>-vs-current.svg.
+The BASELINE: model.py from this git tag or commit. Default 'previous', the
+latest release tag. When -Chart is a directory (default docs), the chart is
+written there as replay-<tag>-vs-current.svg.
+
+.PARAMETER NoBaseline
+Replay only the working tree, no comparison.
+
+.PARAMETER NoChart
+Do not write a chart.
 
 .PARAMETER ZoomFrom
 Chart: local start of an extra zoom panel (yyyy-MM-ddTHH:mm). Needs -ZoomTo.
@@ -54,6 +64,7 @@ Write every published tick (level, volume, flow, lock, reference) to this CSV.
 Python executable. Default: python on PATH.
 
 .EXAMPLE
+# The standard run: previous release vs this change, writes docs/replay-<tag>-vs-current.svg
 .\tools\Invoke-TankReplay.ps1
 
 .EXAMPLE
@@ -69,9 +80,6 @@ $base.Score, $test.Score
 # Before/after chart for a model change: the working tree vs the v0.2.0 gate
 .\tools\Invoke-TankReplay.ps1 -Baseline @{ max_rise_gap_s = 0 } -ZoomFrom 2026-11-01T18:00 -ZoomTo 2026-11-02T16:30 -Chart compare.png -Open
 
-.EXAMPLE
-# The PR chart: the last release vs the working tree, into docs/replay-<tag>-vs-current.svg
-.\tools\Invoke-TankReplay.ps1 -BaselineRef previous -ZoomFrom 2026-11-01T18:00 -ZoomTo 2026-11-02T16:30 -Chart docs
 #>
 [CmdletBinding()]
 param(
@@ -80,10 +88,12 @@ param(
     [string]$To,
     [hashtable]$Parameter = @{},
     [hashtable]$Baseline,
-    [string]$BaselineRef,
+    [string]$BaselineRef = 'previous',
+    [switch]$NoBaseline,
     [string]$ZoomFrom,
     [string]$ZoomTo,
-    [string]$Chart,
+    [string]$Chart = (Join-Path (Split-Path $PSScriptRoot -Parent) 'docs'),
+    [switch]$NoChart,
     [switch]$Open,
     [string]$TicksPath,
     [string]$Python = 'python'
@@ -112,6 +122,10 @@ if ($PSBoundParameters.ContainsKey('Baseline')) {
         $replayArgs.AddRange([string[]]@('--baseline-param', "${name}=${value}"))
     }
 }
+# The release tag is the default baseline, unless -Baseline (parameter overrides of
+# the working tree) was asked for instead, or -NoBaseline.
+$useRef = -not $NoBaseline -and $BaselineRef -and ($PSBoundParameters.ContainsKey('BaselineRef') -or -not $PSBoundParameters.ContainsKey('Baseline'))
+if (-not $useRef) { $BaselineRef = $null }
 if ($BaselineRef) {
     if ($BaselineRef -eq 'previous') {
         $BaselineRef = git -C $repoRoot describe --tags --abbrev=0
@@ -121,8 +135,9 @@ if ($BaselineRef) {
     $replayArgs.AddRange([string[]]@('--baseline-ref', $BaselineRef))
 }
 if ($ZoomFrom -and $ZoomTo) { $replayArgs.AddRange([string[]]@('--zoom-from', $ZoomFrom, '--zoom-to', $ZoomTo)) }
-if ($Chart) {
+if ($Chart -and -not $NoChart) {
     $chartPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Chart)
+    if (-not $PSBoundParameters.ContainsKey('Chart')) { $null = New-Item -ItemType Directory -Force -Path $chartPath }
     if (Test-Path -LiteralPath $chartPath -PathType Container) {
         $chartName = if ($BaselineRef) { "replay-$BaselineRef-vs-current.svg" } else { 'replay-current.svg' }
         $chartPath = Join-Path $chartPath $chartName

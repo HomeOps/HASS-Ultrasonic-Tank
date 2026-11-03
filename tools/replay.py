@@ -370,18 +370,29 @@ def draw_chart(path: Path, readings, errors, baseline, reference, annotations, f
         return datetime.fromtimestamp(when, timezone.utc)
 
     s = summary["score"]
-    cand_label = "CURRENT model.py (thick bright solid)" if baseline else "model.py replay (thick solid)"
+    cand_label = "NEW: this change (thick bright solid)" if baseline else "model.py (thick bright solid)"
     if summary["overrides"]:
         cand_label += " [" + ", ".join(summary["overrides"]) + "]"
     base_ref = baseline and summary["baseline"]["ref"]
-    base_label = f"{base_ref} release (grey dashed)" if base_ref else "BEFORE (grey dashed)"
+    base_label = f"BASELINE: {base_ref} release (grey dashed)" if base_ref else "BASELINE (grey dashed)"
     if baseline and summary["baseline"]["overrides"]:
         base_label += " [" + ", ".join(summary["baseline"]["overrides"]) + "]"
-    truth_label = "TRUTH, pressure (hollow diamonds, scoring only)"
+    truth_label = "TRUTH: pressure sensor (hollow diamonds)"
 
     panels = ["level"] + (["zoom"] if zoom else []) + ["error"]
     ratios = {"level": 1.0, "zoom": 1.2, "error": 0.9}
-    fig, axes = plt.subplots(len(panels), 1, figsize=(14, 4.2 * len(panels)), gridspec_kw={"height_ratios": [ratios[p] for p in panels]})
+    fig, axes = plt.subplots(len(panels), 1, figsize=(14, 4.2 * len(panels) + 0.8), gridspec_kw={"height_ratios": [ratios[p] for p in panels]})
+    if baseline:
+        bs, bl = summary["baseline"]["score"], summary["baseline"]
+        fig.suptitle(f"BASELINE {base_ref or ''} vs NEW (this change): mean error {bs['mean']:.1f} -> {s['mean']:.1f} pts",
+                     x=0.01, y=0.995, ha="left", fontsize=15, fontweight="bold")
+        fig.text(0.01, 0.948 if len(panels) == 2 else 0.962,
+                 f"At the {s['samples']} truth points, NEW is better at {bl['better']}, worse at {bl['worse']}, the same at {bl['same']}.  "
+                 f"Where the dashed line runs on top of the solid one, both versions agree.\n"
+                 f"Replayed from empty over {summary['start']} to {summary['end']} Costa Rica time.",
+                 ha="left", va="top", fontsize=10.5)
+    else:
+        fig.suptitle(f"model.py: mean error {s['mean']:.1f} pts ({summary['start']} to {summary['end']} Costa Rica time)", x=0.01, ha="left", fontsize=15, fontweight="bold")
     step = max(1, int(60 / (readings[1].time - readings[0].time))) if len(readings) > 1 else 1
 
     for ax, panel in zip(axes, panels):
@@ -394,12 +405,12 @@ def draw_chart(path: Path, readings, errors, baseline, reference, annotations, f
             for i, span in enumerate(annotations):
                 ax.fill_between([to_dt(span["start"]), to_dt(span["end"])], span["min"], span["max"] + 2, facecolor="none", edgecolor="white",
                                 hatch="////", lw=0.8, alpha=0.8, zorder=1,
-                                label=f"TRUTH, {span['source']}: {span['min']:.0f}-{span['max']:.0f} % (hatched band)" if i == 0 else None)
+                                label=f"TRUTH: {span['source']} says {span['min']:.0f}-{span['max']:.0f} % (hatched band)" if i == 0 else None)
             if baseline:
                 b = baseline["readings"][::step]
-                ax.plot([to_dt(r.time) for r in b], [r.level_pct for r in b], color=BASELINE, lw=2.0, ls=DASHED, label=base_label, zorder=3)
+                ax.plot([to_dt(r.time) for r in b], [r.level_pct for r in b], color=BASELINE, lw=1.6, ls=DASHED, label=base_label, zorder=5)
             c = readings[::step]
-            ax.plot([to_dt(r.time) for r in c], [r.level_pct for r in c], color=CANDIDATE, lw=2.6, label=cand_label, zorder=4)
+            ax.plot([to_dt(r.time) for r in c], [r.level_pct for r in c], color=CANDIDATE, lw=3.0, label=cand_label, zorder=4)
             ax.plot([to_dt(t) for t, _ in reference], [v for _, v in reference], "D", color="white", mfc=BACKGROUND, mew=1.1, ms=4, label=truth_label)
             ax.set_ylim(-5, 110)
             ax.set_ylabel("level %")
@@ -408,8 +419,7 @@ def draw_chart(path: Path, readings, errors, baseline, reference, annotations, f
                 ax.set_title(f"Zoom: {zoom[0]:%b %d %H:%M} to {zoom[1]:%b %d %H:%M} local", loc="left")
                 ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d %H:%M", tz=local))
             else:
-                title = f"Level, replayed from empty over {summary['frames']:,} raw frames ({summary['start']} to {summary['end']} local)"
-                ax.set_title(title, loc="left")
+                ax.set_title("Tank level", loc="left", fontsize=12, fontweight="bold")
                 ax.xaxis.set_major_locator(mdates.DayLocator(tz=local))
                 ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d", tz=local))
                 if zoom:
@@ -418,26 +428,18 @@ def draw_chart(path: Path, readings, errors, baseline, reference, annotations, f
         else:
             if baseline:
                 be = with_gaps([(t, abs(e)) for t, e in baseline["errors"]])
-                ax.plot([to_dt(t) for t, _ in be], [e for _, e in be], color=BASELINE, lw=2.0, ls=DASHED, marker="o", mfc=BACKGROUND, ms=4, label=base_label)
+                ax.plot([to_dt(t) for t, _ in be], [e for _, e in be], color=BASELINE, lw=1.6, ls=DASHED, label=base_label, zorder=5)
             ce = with_gaps([(t, abs(e)) for t, e in errors])
-            ax.plot([to_dt(t) for t, _ in ce], [e for _, e in ce], color=CANDIDATE, lw=2.6, marker="s", ms=3.5, label=cand_label)
+            ax.plot([to_dt(t) for t, _ in ce], [e for _, e in ce], color=CANDIDATE, lw=3.0, label=cand_label, zorder=4)
             ax.axhline(BIG_ERROR_PTS, color="white", lw=0.8, ls=":")
             ax.set_ylim(0, 100)
             ax.set_ylabel("error vs truth (pts)\nlower is better")
             ax.xaxis.set_major_locator(mdates.DayLocator(tz=local))
             ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d", tz=local))
-            ax.set_xlabel("local time (no line = no reference data)")
-            key = f"over_{int(BIG_ERROR_PTS)}"
-            if baseline:
-                bs = summary["baseline"]["score"]
-                bl = summary["baseline"]
-                title = (f"How wrong at each of the {s['samples']} truth readings:  better at {bl['better']}, worse at {bl['worse']}, same at {bl['same']}.  "
-                         f"Mean error {bs['mean']} -> {s['mean']},  off by >{int(BIG_ERROR_PTS)} pts: {bs[key]} -> {s[key]}")
-            else:
-                title = f"How wrong at each of the {s['samples']} truth readings: mean {s['mean']}, p90 {s['p90']}, off by >{int(BIG_ERROR_PTS)} pts: {s[key]}"
-            ax.set_title(title, loc="left", fontsize=10)
+            ax.set_xlabel("Costa Rica time (no line = no truth data)")
+            ax.set_title("How wrong vs the truth (lower is better)", loc="left", fontsize=12, fontweight="bold")
             ax.legend(loc="upper left", fontsize=8.5, framealpha=0.85)
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.9 if len(panels) == 2 else 0.93))
     fig.savefig(path, dpi=110)
     plt.close(fig)
 
