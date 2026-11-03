@@ -98,13 +98,26 @@ def test_truck_fill_is_rate_limited_then_reaches_the_level():
     assert readings[-1].surface_locked
 
 
-def test_known_limit_fast_fill_ending_on_the_reflector_is_not_trusted():
-    """95 % puts the surface on the stationary reflector.  A clean fill faster than the cap
-    is never accepted, and no statistic separates "full" from "reflector over a low tank"
-    (a reflector-only run lasted 78 min at 50 % in the field data).  The model must then
-    report that it is NOT locked, so nothing downstream trusts the stale level."""
+REFLECTOR_LEVEL_PCT = 95.0                      # puts the surface on the stationary reflector
+
+
+def test_a_fill_that_sweeps_up_to_the_reflector_may_end_there():
+    """2026-11-03 05:30: the city fill ended at 0.21-0.25 m, inside the reflector band, and
+    v0.2.1 ignored it for 80 min.  The frames swept up to the band on the way, which a
+    reflector seen over a low tank never does (see test_reflector_is_ignored_on_a_low_tank)."""
     model, start = settled_model(5.0)
-    readings = run(model, start, 90 * 60, truck_fill(start, 5.0, 95.0))
+    readings = run(model, start, 90 * 60, truck_fill(start, 5.0, REFLECTOR_LEVEL_PCT))
+    assert readings[-1].level_pct == pytest.approx(REFLECTOR_LEVEL_PCT, abs=FILL_TOLERANCE_PCT)
+    assert readings[-1].surface_locked
+
+
+def test_without_the_sweep_rule_a_fill_ending_on_the_reflector_is_ignored():
+    """Control for the test above: the v0.2.1 behaviour."""
+    no_sweep = TankParameters(publish_median_s=0.0, reflector_fill_sweep=False)
+    model = TankModel(no_sweep, {"surface_m": distance_for(5.0), "level_pct": 5.0})
+    run(model, START_TIME, 1800, lambda t: distance_for(5.0))
+    start = START_TIME + 1800
+    readings = run(model, start, 90 * 60, truck_fill(start, 5.0, REFLECTOR_LEVEL_PCT))
     assert not readings[-1].surface_locked
 
 

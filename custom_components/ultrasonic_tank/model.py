@@ -53,6 +53,7 @@ class TankParameters:
     velocity_tau_min: float = 2.0           # velocity smoothing
     reflector_m: float = 0.245              # the stationary reflector; <= 0 disables
     reflector_half_width_m: float = 0.05
+    reflector_fill_sweep: bool = True       # a fill that swept up to the reflector may end there (full tank)
     min_valid_m: float = 0.15               # closer = splash at the sensor
     max_valid_m: float = 3.0                # farther = the sensor's no-target code
     lock_window_s: float = 120.0            # a frame this recent = surface locked
@@ -143,10 +144,12 @@ class TankModel:
             self._recent.append((time, x))
             while self._recent and self._recent[0][0] < time - p.rise_support_window_s:
                 self._recent.popleft()
+        band_edge = p.reflector_m + p.reflector_half_width_m
         if (p.reflector_m > 0
-                and s.surface_m > p.reflector_m + p.reflector_half_width_m + 0.05
-                and abs(x - p.reflector_m) < p.reflector_half_width_m):
-            return False                    # the stationary reflector, unless already near full
+                and s.surface_m > band_edge + 0.05
+                and abs(x - p.reflector_m) < p.reflector_half_width_m
+                and not (p.reflector_fill_sweep and self._rise_supported(band_edge, s.surface_m))):
+            return False                    # the stationary reflector, unless near full or a fill swept up to it
         dt = (time - s.last_valid) / 60.0
         if dt <= 0:
             return False
