@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/HomeOps/HASS-Ultrasonic-Tank/compare/v0.2.1...v0.2.2) (2026-11-06)
+
+
+### Bug Fixes
+
+* **model:** follow a fill that ends on the reflector; damp echo swings ([#7](https://github.com/HomeOps/HASS-Ultrasonic-Tank/issues/7)) ([002224c](https://github.com/HomeOps/HASS-Ultrasonic-Tank/commit/002224c05846262ea2c343b15c0bf5e98c168204))
+
 ## [0.2.1](https://github.com/HomeOps/HASS-Ultrasonic-Tank/compare/v0.2.0...v0.2.1) (2026-11-03)
 
 
