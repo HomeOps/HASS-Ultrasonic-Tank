@@ -37,11 +37,11 @@ def load_model(ref: str | None = None):
     return module
 
 
-def build_parameters(model_module, overrides: list[str]):
-    """The module's default TankParameters with NAME=VALUE overrides applied."""
+def build_parameters(model_module, overrides: list[str], utc_offset_h: float = 0.0):
+    """The module's default TankParameters with the site's UTC offset (as HA sets it) and NAME=VALUE overrides."""
     params = model_module.TankParameters()
     known = {f.name for f in fields(params)}
-    changes = {}
+    changes = {"utc_offset_h": utc_offset_h} if "utc_offset_h" in known else {}
     for item in overrides:
         name, sep, value = item.partition("=")
         name = name.strip()

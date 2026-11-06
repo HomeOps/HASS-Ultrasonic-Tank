@@ -22,7 +22,10 @@ reflection and is discarded.  The rise allowance stops growing after
 cover the distances in between (a fill sweeps through them, a near echo does
 not), or after ``rise_support_timeout_s`` blind, so a missed fill never latches.
 The published level integrates a velocity clamped
-to the same envelope, so it never teleports.  While the surface is not visible
+to the same envelope, so it never teleports.  Its target is the median belief
+over ``publish_median_s`` (a short ``fill_window_median_s`` inside the usual
+local fill hours), so the swings between echoes are damped; a fill outside
+those hours, such as a truck delivery, shows up late.  While the surface is not visible
 the estimate coasts along the last *drain* velocity; it never invents a fill.
 
 Units: distances in metres, times in seconds (epoch), level in percent of the
@@ -50,6 +53,7 @@ class TankParameters:
     velocity_tau_min: float = 2.0           # velocity smoothing
     reflector_m: float = 0.245              # the stationary reflector; <= 0 disables
     reflector_half_width_m: float = 0.05
+    reflector_fill_sweep: bool = True       # a fill that swept up to the reflector may end there (full tank)
     min_valid_m: float = 0.15               # closer = splash at the sensor
     max_valid_m: float = 3.0                # farther = the sensor's no-target code
     lock_window_s: float = 120.0            # a frame this recent = surface locked
@@ -60,6 +64,11 @@ class TankParameters:
     rise_support_bin_m: float = 0.05        # the gap is checked in bins this wide
     rise_support_fraction: float = 0.6      # share of bins that must hold a frame
     rise_support_timeout_s: float = 3600.0  # blind longer than this: the support rule is lifted, so a missed fill cannot latch
+    publish_median_s: float = 3600.0        # publish the median belief over this trailing window; <= 0 = off
+    fill_window_median_s: float = 300.0     # shorter median inside the usual fill hours, so a fill shows promptly
+    fill_window_start_h: float = 5.0        # local hour the usual fill window opens (start == end: no window)
+    fill_window_end_h: float = 8.0          # local hour it closes
+    utc_offset_h: float = 0.0               # local time = UTC + this (the integration sets HA's time zone)
 
     @property
     def span_m(self) -> float:
@@ -119,6 +128,7 @@ class TankModel:
         self._flow: deque[float] = deque(self._s.flow_samples, maxlen=self._window(self.params.flow_window_s))
         self._change: deque[float] = deque(self._s.change_samples, maxlen=self._window(self.params.change_window_s))
         self._recent: deque[tuple[float, float]] = deque()   # (time, distance) of valid frames, for rise support
+        self._beliefs: deque[tuple[float, float]] = deque()  # (time, level %) before publishing, for the median
 
     # ------------------------------------------------------------------ frames
     def add_frame(self, time: float, distance_m: float) -> bool:
@@ -134,10 +144,12 @@ class TankModel:
             self._recent.append((time, x))
             while self._recent and self._recent[0][0] < time - p.rise_support_window_s:
                 self._recent.popleft()
+        band_edge = p.reflector_m + p.reflector_half_width_m
         if (p.reflector_m > 0
-                and s.surface_m > p.reflector_m + p.reflector_half_width_m + 0.05
-                and abs(x - p.reflector_m) < p.reflector_half_width_m):
-            return False                    # the stationary reflector, unless already near full
+                and s.surface_m > band_edge + 0.05
+                and abs(x - p.reflector_m) < p.reflector_half_width_m
+                and not (p.reflector_fill_sweep and self._rise_supported(band_edge, s.surface_m))):
+            return False                    # the stationary reflector, unless near full or a fill swept up to it
         dt = (time - s.last_valid) / 60.0
         if dt <= 0:
             return False
@@ -175,6 +187,15 @@ class TankModel:
         projected = s.surface_m + max(s.velocity_m_per_min, 0.0) * since_min      # coast only along a drain
         projected = min(max(projected, p.full_m), p.floor_m)
         belief = (p.floor_m - projected) / p.span_m * 100.0
+        if p.publish_median_s > 0:
+            window_s = p.publish_median_s
+            if self._in_fill_window(time):
+                window_s = p.fill_window_median_s
+            self._beliefs.append((time, belief))
+            while self._beliefs and self._beliefs[0][0] < time - p.publish_median_s:
+                self._beliefs.popleft()
+            ordered = sorted(b for t, b in self._beliefs if t >= time - window_s)
+            belief = ordered[len(ordered) // 2]
 
         velocity_pct = 0.0
         if s.level_pct is None or s.last_tick is None:
@@ -234,6 +255,15 @@ class TankModel:
             if target_m < x < surface_m:
                 seen.add(min(int((surface_m - x) / p.rise_support_bin_m), bins - 1))
         return len(seen) / bins >= p.rise_support_fraction
+
+    def _in_fill_window(self, time: float) -> bool:
+        p = self.params
+        if p.fill_window_start_h == p.fill_window_end_h:
+            return False
+        hour = ((time / 3600.0) + p.utc_offset_h) % 24.0
+        if p.fill_window_start_h < p.fill_window_end_h:
+            return p.fill_window_start_h <= hour < p.fill_window_end_h
+        return hour >= p.fill_window_start_h or hour < p.fill_window_end_h   # wraps midnight
 
     def _window(self, seconds: float, tick_s: float = 10.0) -> int:
         return max(1, int(round(seconds / tick_s)))

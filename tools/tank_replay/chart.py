@@ -42,7 +42,10 @@ def draw_chart(path: Path, readings, errors, baseline, reference, annotations, f
                 time_axis(ax, mdates, local, *span)
                 if zoom:
                     ax.axvspan(*zoom, color="white", alpha=0.07)
-        ax.legend(loc="upper left", fontsize=8.5, framealpha=0.85)
+        legend = ax.legend(loc="upper left", fontsize=8.5, framealpha=0.85)
+        for handle in legend.legend_handles:
+            if hasattr(handle, "set_sizes"):    # the raw scatter: its 2 pt dots are unreadable in a legend
+                handle.set_sizes([18.0])
     fig.tight_layout(rect=(0, 0, 1, 0.9 if len(panels) == 2 else 0.93))
     fig.savefig(path, dpi=110, metadata=SAVE_METADATA)
     plt.close(fig)
@@ -68,11 +71,10 @@ def _header(fig, summary, text, has_baseline, panel_count) -> None:
 
 
 def _level_panel(ax, readings, baseline, reference, annotations, frames, params, text, step, zoom) -> None:
-    if zoom:
-        lo, hi = (z.timestamp() for z in zoom)
-        raw = [(t, (params.floor_m - d) / params.span_m * 100.0) for t, d in frames[::2] if lo <= t <= hi]
-        ax.scatter([to_dt(t) for t, _ in raw], [v for _, v in raw], s=1.0, color=RAW_DOTS,
-                   label="raw ultrasonic (dim dots, the only model input)", rasterized=True)
+    lo, hi = (z.timestamp() for z in zoom) if zoom else (readings[0].time, readings[-1].time)
+    raw = [(t, (params.floor_m - d) / params.span_m * 100.0) for t, d in frames if lo <= t <= hi]
+    ax.scatter([to_dt(t) for t, _ in raw], [v for _, v in raw], s=2.0, color=RAW_DOTS, linewidths=0,
+               label="RAW: ultrasonic distance as level (small grey dots, the only model input)", rasterized=True, zorder=2)
     for i, span in enumerate(annotations):
         ax.fill_between([to_dt(span["start"]), to_dt(span["end"])], span["min"], span["max"] + 2, facecolor="none",
                         edgecolor="white", hatch="////", lw=0.8, alpha=0.8, zorder=1,

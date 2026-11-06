@@ -7,10 +7,11 @@ import pytest
 
 from custom_components.ultrasonic_tank.model import LowWaterAlarm, TankModel, TankParameters, TankReading
 
-PARAMS = TankParameters()
+DEFAULTS = TankParameters()
+PARAMS = TankParameters(publish_median_s=0.0)   # the gate and kinematics, without the output median (tested below)
 FRAME_PERIOD_S = 0.5
 TICK_S = 10.0
-START_TIME = 1_000_000.0
+START_TIME = 1_000_000.0                        # 13:46 UTC: outside the default fill window
 
 
 def distance_for(level_pct: float, params: TankParameters = PARAMS) -> float:
@@ -34,12 +35,13 @@ def torricelli_level(start_pct: float, minutes: float, params: TankParameters = 
     return 100.0 * max(root, 0.0) ** 2
 
 
-def settled_model(level_pct: float, settle_s: float = 1800.0) -> tuple[TankModel, float]:
+def settled_model(level_pct: float, settle_s: float = 1800.0, params: TankParameters = PARAMS,
+                  start: float = START_TIME) -> tuple[TankModel, float]:
     """A model that has watched a steady surface long enough to publish it."""
-    model = TankModel(PARAMS, {"surface_m": distance_for(level_pct), "level_pct": level_pct})
+    model = TankModel(params, {"surface_m": distance_for(level_pct), "level_pct": level_pct})
     target = distance_for(level_pct)
-    run(model, START_TIME, settle_s, lambda t: target)
-    return model, START_TIME + settle_s
+    run(model, start, settle_s, lambda t: target)
+    return model, start + settle_s
 
 
 def test_empty_tank_reads_empty():
@@ -96,13 +98,26 @@ def test_truck_fill_is_rate_limited_then_reaches_the_level():
     assert readings[-1].surface_locked
 
 
-def test_known_limit_fast_fill_ending_on_the_reflector_is_not_trusted():
-    """95 % puts the surface on the stationary reflector.  A clean fill faster than the cap
-    is never accepted, and no statistic separates "full" from "reflector over a low tank"
-    (a reflector-only run lasted 78 min at 50 % in the field data).  The model must then
-    report that it is NOT locked, so nothing downstream trusts the stale level."""
+REFLECTOR_LEVEL_PCT = 95.0                      # puts the surface on the stationary reflector
+
+
+def test_a_fill_that_sweeps_up_to_the_reflector_may_end_there():
+    """2026-11-03 05:30: the city fill ended at 0.21-0.25 m, inside the reflector band, and
+    v0.2.1 ignored it for 80 min.  The frames swept up to the band on the way, which a
+    reflector seen over a low tank never does (see test_reflector_is_ignored_on_a_low_tank)."""
     model, start = settled_model(5.0)
-    readings = run(model, start, 90 * 60, truck_fill(start, 5.0, 95.0))
+    readings = run(model, start, 90 * 60, truck_fill(start, 5.0, REFLECTOR_LEVEL_PCT))
+    assert readings[-1].level_pct == pytest.approx(REFLECTOR_LEVEL_PCT, abs=FILL_TOLERANCE_PCT)
+    assert readings[-1].surface_locked
+
+
+def test_without_the_sweep_rule_a_fill_ending_on_the_reflector_is_ignored():
+    """Control for the test above: the v0.2.1 behaviour."""
+    no_sweep = TankParameters(publish_median_s=0.0, reflector_fill_sweep=False)
+    model = TankModel(no_sweep, {"surface_m": distance_for(5.0), "level_pct": 5.0})
+    run(model, START_TIME, 1800, lambda t: distance_for(5.0))
+    start = START_TIME + 1800
+    readings = run(model, start, 90 * 60, truck_fill(start, 5.0, REFLECTOR_LEVEL_PCT))
     assert not readings[-1].surface_locked
 
 
@@ -128,7 +143,7 @@ def test_near_echo_after_a_blind_spell_does_not_walk_the_level_up():
 
 def test_without_the_rise_rule_the_same_echo_walks_the_level_up():
     """Control for the test above: the v0.2.0 gate let the rise allowance grow with blind time."""
-    unlimited = TankParameters(max_rise_gap_s=0.0)
+    unlimited = TankParameters(max_rise_gap_s=0.0, publish_median_s=0.0)
     model = TankModel(unlimited, {"surface_m": distance_for(TRUE_LEVEL_PCT), "level_pct": TRUE_LEVEL_PCT})
     run(model, START_TIME, BLIND_S, lambda t: distance_for(TRUE_LEVEL_PCT))
     start = START_TIME + BLIND_S
@@ -153,6 +168,66 @@ def test_a_fill_missed_while_blind_is_followed_once_the_timeout_passes():
                    lambda t: SPLASH_M if t < start + MISSED_FILL_BLIND_S else filled)
     assert readings[-1].level_pct == pytest.approx(FILLED_LEVEL_PCT, abs=FILL_TOLERANCE_PCT)
     assert readings[-1].surface_locked
+
+
+STEADY_PCT = 60.0
+EXCURSION_PCT = 70.0                            # a 15-min swing the gate accepts (an echo, or a splash)
+EXCURSION_S = 15 * 60
+SETTLE_S = 2 * 3600
+DAMPED_PCT = 3.0
+
+
+def excursion(start: float):
+    """Ramps up at a fill's speed (so the gate accepts it), holds, then drops back."""
+    def distance_at(t: float) -> float:
+        if t >= start + EXCURSION_S:
+            return distance_for(STEADY_PCT)
+        return distance_for(min(STEADY_PCT + FILL_PCT_PER_MIN * (t - start) / 60.0, EXCURSION_PCT))
+    return distance_at
+
+
+def test_a_short_excursion_is_damped_by_the_published_median():
+    model, start = settled_model(STEADY_PCT, SETTLE_S, DEFAULTS)
+    readings = run(model, start, 2 * EXCURSION_S, excursion(start))
+    assert max(r.level_pct for r in readings) < STEADY_PCT + DAMPED_PCT
+
+
+def test_without_the_median_the_same_excursion_is_published():
+    """Control for the test above."""
+    model, start = settled_model(STEADY_PCT, SETTLE_S, PARAMS)
+    readings = run(model, start, 2 * EXCURSION_S, excursion(start))
+    assert max(r.level_pct for r in readings) > EXCURSION_PCT - DAMPED_PCT
+
+
+DAY_S = 86400.0
+CITY_FILL_START = START_TIME - START_TIME % DAY_S + 5.5 * 3600     # 05:30 local (UTC offset 0)
+AFTERNOON_FILL_START = START_TIME - START_TIME % DAY_S + 14 * 3600
+FILL_FROM_PCT, FILL_TO_PCT = 20.0, 70.0
+FILL_PCT_PER_MIN = 2.0                          # under the fill cap
+FILL_S = (FILL_TO_PCT - FILL_FROM_PCT) / FILL_PCT_PER_MIN * 60
+AFTER_FILL_S = 10 * 60
+FILL_SETTLE_S = 3600.0
+
+
+def fill(start: float):
+    return lambda t: distance_for(min(FILL_FROM_PCT + FILL_PCT_PER_MIN * max(t - start, 0.0) / 60.0, FILL_TO_PCT))
+
+
+def fill_readings(fill_start: float) -> list[TankReading]:
+    settle_start = fill_start - FILL_SETTLE_S
+    model, start = settled_model(FILL_FROM_PCT, FILL_SETTLE_S, DEFAULTS, settle_start)
+    return run(model, start, FILL_S + AFTER_FILL_S, fill(start))
+
+
+def test_a_fill_in_the_usual_fill_hours_shows_promptly():
+    readings = fill_readings(CITY_FILL_START)
+    assert readings[-1].level_pct == pytest.approx(FILL_TO_PCT, abs=FILL_TOLERANCE_PCT)
+
+
+def test_a_fill_outside_the_usual_hours_shows_late():
+    """Accepted trade-off (owner, 2026-11-03): truck deliveries are rare, so they may lag."""
+    readings = fill_readings(AFTERNOON_FILL_START)
+    assert readings[-1].level_pct < FILL_TO_PCT - 10.0
 
 
 def test_coasts_only_along_a_drain():

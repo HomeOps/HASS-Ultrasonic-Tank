@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 
 BACKGROUND = "#111418"
 CANDIDATE = "#56B4E9"               # Okabe-Ito sky blue, bright on dark
-BASELINE = "#9a9a9a"
+BASELINE = "#F0E442"               # Okabe-Ito yellow: apart from the blue and the grey raw dots for every colour vision
 BASELINE_OFFSET_PTS = 4.0           # PREV is drawn this much higher, so it never hides NEXT
-RAW_DOTS = "#3a3f47"
+RAW_DOTS = "#7d8590"               # mid grey: visible on the background, dimmer than PREV's line
 DASHED = (0, (6, 3))
 REFERENCE_GAP_S = 3 * 3600          # no line is drawn across a truth gap this long
 DAY_TICKS_ABOVE_DAYS = 4            # longer replays get one tick per day, shorter ones hours
@@ -33,7 +33,7 @@ def labels(summary: dict, has_baseline: bool) -> dict:
     if summary["overrides"]:
         candidate += " [" + ", ".join(summary["overrides"]) + "]"
     ref = has_baseline and summary["baseline"]["ref"]
-    baseline = f"PREV: {ref}, the release installed now (grey dashed)" if ref else "PREV (grey dashed)"
+    baseline = f"PREV: {ref}, the release installed now (yellow dashed)" if ref else "PREV (yellow dashed)"
     baseline += f", drawn {BASELINE_OFFSET_PTS:.0f} pts higher so it never hides NEXT"
     if has_baseline and summary["baseline"]["overrides"]:
         baseline += " [" + ", ".join(summary["baseline"]["overrides"]) + "]"
