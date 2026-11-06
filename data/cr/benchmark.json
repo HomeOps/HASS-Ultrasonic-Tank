@@ -6,6 +6,7 @@
     { "from": "2026-10-29", "to": "2026-10-30", "what": "Empty tank (owner truth, pressure unavailable)" },
     { "from": "2026-10-31", "to": "2026-11-01", "what": "Truck fill at 10-31 22:20, drain to empty, refill, night near echoes start" },
     { "from": "2026-11-02", "to": "2026-11-02", "what": "Night near-echo walk-up, then the city delivery at 05:15 and a full tank" },
-    { "from": "2026-11-02", "to": "2026-11-03", "what": "2x-echo night, then the 11-03 city fill ending on the reflector at 05:30" }
+    { "from": "2026-11-02", "to": "2026-11-03", "what": "2x-echo night, then the 11-03 city fill ending on the reflector at 05:30" },
+    { "from": "2026-11-04", "to": "2026-11-05", "what": "Cold start at 87 % under wrong echoes, the 11-04 big drain, a late drop to the surface at 27 %, no fill, empty" }
   ]
 }
