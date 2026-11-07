@@ -239,6 +239,44 @@ def test_coasts_only_along_a_drain():
     assert not after.surface_locked
 
 
+HELD_LEVEL_PCT = 42.0                           # 2026-11-04 evening: the model held ~42 % ...
+DROPPED_LEVEL_PCT = 27.0                        # ... while the surface sat at 27 % for hours
+SPARSE_ECHO_EVERY = 10                          # one frame in ten still lands on the old level
+DROP_S = 90 * 60
+DROP_TOLERANCE_PCT = 3.0
+FAR_RATIO = 1.6                                 # farther than drop_max_ratio, and not a whole multiple
+FAR_HELD_LEVEL_PCT = 80.0
+
+
+def sparse_old_echo(old_m: float, new_m: float):
+    """Most frames at new_m; every SPARSE_ECHO_EVERY-th frame still at old_m."""
+    return lambda t: old_m if int(t / FRAME_PERIOD_S) % SPARSE_ECHO_EVERY == 0 else new_m
+
+
+def test_a_dominant_nearby_deeper_echo_becomes_the_surface():
+    """2026-11-04 22:00 to 11-05 03:00: a sparse echo at the old level kept resetting the
+    gate's clock, so the dominant surface 0.3 m deeper was never reachable."""
+    model, start = settled_model(HELD_LEVEL_PCT)
+    readings = run(model, start, DROP_S, sparse_old_echo(distance_for(HELD_LEVEL_PCT), distance_for(DROPPED_LEVEL_PCT)))
+    assert readings[-1].level_pct == pytest.approx(DROPPED_LEVEL_PCT, abs=DROP_TOLERANCE_PCT)
+
+
+def test_without_the_echo_switch_the_sparse_echo_holds_the_level():
+    """Control for the test above: the v0.2.2 behaviour."""
+    no_switch = TankParameters(publish_median_s=0.0, echo_window_s=0.0)
+    model, start = settled_model(HELD_LEVEL_PCT, params=no_switch)
+    readings = run(model, start, DROP_S, sparse_old_echo(distance_for(HELD_LEVEL_PCT), distance_for(DROPPED_LEVEL_PCT)))
+    assert readings[-1].level_pct == pytest.approx(HELD_LEVEL_PCT, abs=DROP_TOLERANCE_PCT)
+
+
+def test_a_dominant_far_echo_is_multipath_not_a_drop():
+    """2026-11-03: unlimited, the switch took a 91 % tank to 21 % on echoes 2.4-4.7x the surface."""
+    surface_m = distance_for(FAR_HELD_LEVEL_PCT)
+    model, start = settled_model(FAR_HELD_LEVEL_PCT)
+    readings = run(model, start, DROP_S, sparse_old_echo(surface_m, surface_m * FAR_RATIO))
+    assert readings[-1].level_pct == pytest.approx(FAR_HELD_LEVEL_PCT, abs=DROP_TOLERANCE_PCT)
+
+
 def test_state_round_trip_restores_the_published_level():
     model, start = settled_model(42.0)
     restored = TankModel(PARAMS, model.to_dict())
