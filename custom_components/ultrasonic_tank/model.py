@@ -21,6 +21,9 @@ reflection and is discarded.  The rise allowance stops growing after
 ``max_rise_gap_s`` unseen: a larger rise is accepted only when recent frames
 cover the distances in between (a fill sweeps through them, a near echo does
 not), or after ``rise_support_timeout_s`` blind, so a missed fill never latches.
+Because a sparse wrong echo near the surface keeps resetting that clock, the
+echoes of the last half hour are also compared by hold time: a nearby deeper
+echo that dominates while the surface is barely seen becomes the surface.
 The published level integrates a velocity clamped
 to the same envelope, so it never teleports.  Its target is the median belief
 over ``publish_median_s`` (a short ``fill_window_median_s`` inside the usual
@@ -71,12 +74,14 @@ class TankParameters:
     utc_offset_h: float = 0.0               # local time = UTC + this (the integration sets HA's time zone)
     echo_window_s: float = 1800.0           # echoes compared over this trailing window, by hold time; <= 0 = off
     echo_check_s: float = 60.0              # how often they are compared
+    echo_recent_s: float = 600.0            # ... and the switch must also hold over this recent part
     echo_bin_m: float = 0.05                # echoes are grouped in bins this wide (a bin and its neighbours)
     echo_hold_cap_s: float = 60.0           # a frame's weight is its hold time, capped (a silent sensor is not an echo)
     echo_min_jump_m: float = 0.10           # a switch must move the surface at least this far
     drop_share: float = 0.6                 # a deeper echo holding this share of the window ...
     drop_current_max_share: float = 0.15    # ... while the surface holds at most this, is the surface
-    multiple_share: float = 0.2             # a closer echo with this share, of which the surface is a whole multiple, is the surface
+    drop_max_ratio: float = 1.3             # ... if no farther than this times the surface distance (far echoes are multipath)
+    multiple_share: float = 0.2             # an echo with this share explains a deeper one at a whole multiple (multipath)
     multiple_tolerance: float = 0.12        # relative tolerance for "a whole multiple" (2x, 3x, 4x)
 
     @property
@@ -275,13 +280,23 @@ class TankModel:
         The gate follows whichever echo is near the surface, so a sparse wrong
         echo there can hold it for hours while the real surface is plainly
         visible elsewhere.  Every ``echo_check_s`` the echoes of the last
-        ``echo_window_s`` are compared by hold time:
+        ``echo_window_s`` are compared by hold time.  A deeper echo holding
+        ``drop_share`` while the surface holds at most ``drop_current_max_share``,
+        both over the window and over its last ``echo_recent_s`` (during a fill
+        the window still holds the old level), is the surface when:
 
-        * DROP: a deeper echo holding ``drop_share`` while the surface holds at
-          most ``drop_current_max_share`` is the surface, unless it is a whole
-          multiple of the surface or of another visible echo (multipath).
-        * MULTIPLE: when the surface is a whole multiple (2x-4x) of a closer echo
-          holding ``multiple_share``, the surface is that closer echo.
+        * it is at most ``drop_max_ratio`` times the surface distance: farther
+          echoes that dominate are multipath (2.4-4.7x on 2026-11-02..03, where an
+          unlimited switch took a 91 % tank to 21 %);
+        * it is not a whole multiple of the surface or of another echo holding
+          ``multiple_share``.
+
+        There is no rule for a CLOSER echo: on 2026-11-02 the closer echo sat at
+        half the true distance and was wrong, and in the hours the model sat on a
+        far echo (11-03, 11-04) the true surface was barely seen at all.  Blocking
+        the switch in the afternoon (when the frames are mostly wrong) was tried
+        and rejected: it only delayed a wrong switch to 18:26 and raised the
+        >20-point errors from 81 to 106 over 11-02..07.
         """
         p, s = self.params, self._s
         self._echoes.append((time, x))
@@ -292,46 +307,32 @@ class TankModel:
         self._echo_checked = time
         if not s.has_lock or len(self._echoes) < 2:
             return False
-
-        weights: dict[int, float] = {}
         frames = list(self._echoes)
-        for (t, d), (t_next, _) in zip(frames, frames[1:]):
-            b = int(d / p.echo_bin_m)
-            weights[b] = weights.get(b, 0.0) + min(t_next - t, p.echo_hold_cap_s)
-        total = sum(weights.values())
-        if p.reflector_m > 0:                       # the reflector counts, but is never a target
-            lo_bin = int((p.reflector_m - p.reflector_half_width_m) / p.echo_bin_m)
-            hi_bin = int((p.reflector_m + p.reflector_half_width_m) / p.echo_bin_m)
-            candidates = {b: w for b, w in weights.items() if not lo_bin <= b <= hi_bin}
-        else:
-            candidates = weights
-        if total <= 0:
+        share = self._echo_shares(frames)
+        recent_share = self._echo_shares([f for f in frames if f[0] >= time - p.echo_recent_s])
+        if share is None or recent_share is None:
             return False
-
-        def share(b: int) -> float:
-            return (weights.get(b - 1, 0.0) + weights.get(b, 0.0) + weights.get(b + 1, 0.0)) / total
 
         def centre(b: int) -> float:
             return (b + 0.5) * p.echo_bin_m
 
-        current = share(int(s.surface_m / p.echo_bin_m))
+        lo_bin = int((p.reflector_m - p.reflector_half_width_m) / p.echo_bin_m)
+        hi_bin = int((p.reflector_m + p.reflector_half_width_m) / p.echo_bin_m)
+        candidates = {int(d / p.echo_bin_m) for _, d in frames}
+        if p.reflector_m > 0:                       # the reflector counts, but is never a target
+            candidates = {b for b in candidates if not lo_bin <= b <= hi_bin}
         if not candidates:
             return False
+        surface_bin = int(s.surface_m / p.echo_bin_m)
         visible = [b for b in candidates if share(b) >= p.multiple_share]
-        target = None
-        closer = [b for b in visible
-                  if centre(b) < s.surface_m - p.echo_min_jump_m and self._is_multiple(s.surface_m, centre(b))]
-        if closer:
-            target = max(closer, key=share)
-        else:
-            best = max(candidates, key=share)
-            if (centre(best) > s.surface_m + p.echo_min_jump_m
-                    and share(best) >= p.drop_share
-                    and current <= p.drop_current_max_share
-                    and not any(self._is_multiple(centre(best), d)
-                                for d in [s.surface_m] + [centre(b) for b in visible if b != best])):
-                target = best
-        if target is None:
+        target = max(candidates, key=share)
+        # Both over the window and over its last echo_recent_s: during a fill the
+        # window still holds the old, deeper level, but the recent frames do not.
+        if not (s.surface_m + p.echo_min_jump_m < centre(target) <= s.surface_m * p.drop_max_ratio
+                and min(share(target), recent_share(target)) >= p.drop_share
+                and max(share(surface_bin), recent_share(surface_bin)) <= p.drop_current_max_share
+                and not any(self._is_multiple(centre(target), d)
+                            for d in [s.surface_m] + [centre(b) for b in visible if b != target])):
             return False
         lo, hi = centre(target) - 1.5 * p.echo_bin_m, centre(target) + 1.5 * p.echo_bin_m
         recent = [d for _, d in frames if lo <= d <= hi]
@@ -339,6 +340,18 @@ class TankModel:
         s.velocity_m_per_min = 0.0
         s.last_valid = time
         return lo <= x <= hi
+
+    def _echo_shares(self, frames: list[tuple[float, float]]):
+        """share(bin) -> fraction of the frames' hold time in that bin and its neighbours, or None."""
+        p = self.params
+        weights: dict[int, float] = {}
+        for (t, d), (t_next, _) in zip(frames, frames[1:]):
+            b = int(d / p.echo_bin_m)
+            weights[b] = weights.get(b, 0.0) + min(t_next - t, p.echo_hold_cap_s)
+        total = sum(weights.values())
+        if total <= 0:
+            return None
+        return lambda b: (weights.get(b - 1, 0.0) + weights.get(b, 0.0) + weights.get(b + 1, 0.0)) / total
 
     def _is_multiple(self, far_m: float, near_m: float) -> bool:
         """True when ``far_m`` is 2x, 3x or 4x ``near_m`` within ``multiple_tolerance``."""
@@ -348,13 +361,16 @@ class TankModel:
         return any(abs(ratio - k) <= self.params.multiple_tolerance * k for k in (2, 3, 4))
 
     def _in_fill_window(self, time: float) -> bool:
-        p = self.params
-        if p.fill_window_start_h == p.fill_window_end_h:
+        return self._in_local_hours(time, self.params.fill_window_start_h, self.params.fill_window_end_h)
+
+    def _in_local_hours(self, time: float, start_h: float, end_h: float) -> bool:
+        """True when the local hour is in [start_h, end_h); start == end is no window."""
+        if start_h == end_h:
             return False
-        hour = ((time / 3600.0) + p.utc_offset_h) % 24.0
-        if p.fill_window_start_h < p.fill_window_end_h:
-            return p.fill_window_start_h <= hour < p.fill_window_end_h
-        return hour >= p.fill_window_start_h or hour < p.fill_window_end_h   # wraps midnight
+        hour = ((time / 3600.0) + self.params.utc_offset_h) % 24.0
+        if start_h < end_h:
+            return start_h <= hour < end_h
+        return hour >= start_h or hour < end_h      # wraps midnight
 
     def _window(self, seconds: float, tick_s: float = 10.0) -> int:
         return max(1, int(round(seconds / tick_s)))
