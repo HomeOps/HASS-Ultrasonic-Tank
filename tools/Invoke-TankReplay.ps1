@@ -14,7 +14,10 @@ Run with no arguments, it:
      Pressure is a different physical quantity and is never converted into a
      level, nor ever a model input. The owner's reference-annotations.csv
      spans are a level in % and are checked as one;
-  3. writes one chart per window, docs/replay-<from>-to-<to>.svg;
+  3. writes one chart per window, docs/replay-<from>-to-<to>.svg, and one
+     chart per day for the last -RecentDays days (default 10),
+     docs/days/day-<date>.svg, all cut from one continuous replay of every
+     recorded day, so no day starts from empty;
   4. returns one result per window (Correlation, Days, Owner, Baseline with
      the hours NEXT fixed and broke, Window).
 
@@ -71,6 +74,20 @@ Write a chart to this path (.png or .svg, needs matplotlib): level with pressure
 on its own hPa axis, optional zoom, and the hours that disagree with pressure. Dark mode, colour-blind safe. With -Open,
 open it after.
 
+.PARAMETER DayCharts
+Also write one PNG per Costa Rica day into this folder (day-yyyy-MM-dd.png),
+all cut from the same continuous replay, so no day starts from empty.
+
+.PARAMETER LastDays
+With -DayCharts: only the last N days get a chart.
+
+.PARAMETER DayFormat
+With -DayCharts: png (default) or svg.
+
+.PARAMETER RecentDays
+The standard run writes a day chart for this many of the most recent days
+into docs/days. Default 10.
+
 .PARAMETER TicksPath
 Write every published tick (level, volume, flow, lock, reference) to this CSV.
 
@@ -114,6 +131,10 @@ param(
     [string]$ZoomTo,
     [string]$Chart = (Join-Path (Split-Path $PSScriptRoot -Parent) 'docs'),
     [switch]$NoChart,
+    [string]$DayCharts,
+    [ValidateRange(1, 366)][int]$LastDays,
+    [ValidateSet('png', 'svg')][string]$DayFormat = 'png',
+    [ValidateRange(1, 366)][int]$RecentDays = 10,
     [switch]$Open,
     [string]$TicksPath,
     [string]$Python = 'python'
@@ -145,6 +166,22 @@ if (-not $AllData -and -not $From -and -not $To -and (Test-Path -LiteralPath $be
         Write-Verbose "Benchmark window $($window.from) .. $($window.to): $($window.what)"
         $windowResult = & $PSCommandPath @windowParams
         $windowResult | Add-Member -NotePropertyName Window -NotePropertyValue $window.what -PassThru
+    }
+    # The last days, one chart each, cut from one continuous replay of all the data:
+    # docs/days/day-<date>.svg. Older day charts are removed, so the folder always
+    # holds exactly the last $RecentDays days.
+    if ($Chart -and -not $NoChart -and -not $PSBoundParameters.ContainsKey('Chart')) {
+        $daysDir = Join-Path $Chart 'days'
+        $dayParams = @{} + $PSBoundParameters
+        $dayParams['AllData'] = $true
+        $dayParams['NoChart'] = $true
+        $dayParams['DayCharts'] = $daysDir
+        $dayParams['LastDays'] = $RecentDays
+        $dayParams['DayFormat'] = 'svg'
+        $dayResult = & $PSCommandPath @dayParams
+        $keep = @($dayResult.DayCharts | ForEach-Object { Split-Path $_ -Leaf })
+        Get-ChildItem -LiteralPath $daysDir -Filter 'day-*.svg' | Where-Object Name -notin $keep | Remove-Item
+        $dayResult | Add-Member -NotePropertyName Window -NotePropertyValue "Last $RecentDays days, one chart per day" -PassThru
     }
     return
 }
@@ -181,6 +218,11 @@ if ($Chart -and -not $NoChart) {
         $chartPath = Join-Path $chartPath $(if ($From -or $To) { "replay-$From-to-$To.svg" } else { 'replay-all.svg' })
     }
     $replayArgs.AddRange([string[]]@('--chart', $chartPath))
+}
+if ($DayCharts) {
+    $dayChartDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($DayCharts)
+    $replayArgs.AddRange([string[]]@('--day-charts', $dayChartDir, '--day-format', $DayFormat))
+    if ($LastDays) { $replayArgs.AddRange([string[]]@('--day-charts-last', "$LastDays")) }
 }
 if ($TicksPath) {
     $ticksFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($TicksPath)
@@ -234,6 +276,7 @@ $result = [pscustomobject]@{
         }
     }
     Chart            = $summary.chart
+    DayCharts        = @($summary.day_charts)
     TicksFile        = $summary.ticks_file
 }
 

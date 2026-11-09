@@ -51,6 +51,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--zoom-to", type=datetime.fromisoformat, help="chart: local end of the zoom panel")
     parser.add_argument("--ticks", type=Path, help="write every published tick to this CSV")
     parser.add_argument("--chart", type=Path, help="write a PNG (or .svg) chart (needs matplotlib)")
+    parser.add_argument("--day-charts", type=Path, metavar="DIR",
+                        help="also write one chart per local day into DIR, all cut from this one continuous replay")
+    parser.add_argument("--day-charts-last", type=int, metavar="N", help="only the last N days get a day chart")
+    parser.add_argument("--day-format", choices=("png", "svg"), default="png", help="day chart format (default: png)")
     return parser.parse_args(argv)
 
 
@@ -91,6 +95,11 @@ def main(argv: list[str] | None = None) -> int:
             zoom = (args.zoom_from.replace(tzinfo=local), args.zoom_to.replace(tzinfo=local))
         draw_chart(args.chart, readings, hours, baseline, pressure, annotations, frames, params, local, summary, zoom)
         summary["chart"] = str(args.chart)
+
+    if args.day_charts:
+        from .chart import draw_day_charts
+        summary["day_charts"] = draw_day_charts(args.day_charts, readings, hours, baseline, pressure, annotations,
+                                                frames, params, local, summary, args.day_charts_last, f".{args.day_format}")
 
     json.dump(summary, sys.stdout, indent=2)
     sys.stdout.write("\n")

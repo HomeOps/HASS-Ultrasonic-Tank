@@ -2,17 +2,47 @@
 optional zoom, and the hours whose direction disagrees with pressure."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .chart_style import (BACKGROUND, BASELINE, BASELINE_OFFSET_PTS, CANDIDATE, DASHED, PRESSURE_MARKER, RAW_DOTS,
                           SAVE_METADATA, VERDICT_MARKERS, apply_theme, labels, time_axis, to_dt)
-from .scoring import DISAGREEMENTS
+from .scoring import DISAGREEMENTS, compare
 
 PANEL_RATIOS = {"level": 1.0, "zoom": 1.2, "hours": 0.45}
 POINTS_PER_MINUTE = 60              # readings are thinned to one per minute for drawing
 
 
-def draw_chart(path: Path, readings, hours, baseline, pressure, annotations, frames, params, local, summary, zoom) -> None:
+def draw_day_charts(folder: Path, readings, hours, baseline, pressure, annotations, frames, params, local, summary,
+                    last: int | None = None, suffix: str = ".png") -> list[str]:
+    """One chart per local day (the ``last`` days only, when given), all cut from the same continuous replay,
+    so no day starts from empty."""
+    folder.mkdir(parents=True, exist_ok=True)
+    base_days = {d["day"]: d for d in summary["baseline"]["days"]} if baseline else {}
+    written = []
+    scored = {d["day"]: d for d in summary["days"]}
+    files = summary["files"][-last:] if last else summary["files"]
+    for day in (scored.get(f[:-4], {"day": f[:-4]}) for f in files):   # a day with no pressure still gets a chart
+        start = datetime.fromisoformat(day["day"]).replace(tzinfo=local)
+        end = start + timedelta(days=1)
+        lo, hi = start.timestamp(), end.timestamp()
+        day_hours = [h for h in hours if lo <= h["time"] < hi]
+        day_summary = {**summary, "correlation": day, "files": [f"{day['day']}.csv"]}
+        day_baseline = None
+        if baseline:
+            base_hours = [h for h in baseline["hours"] if lo <= h["time"] < hi]
+            day_baseline = {**baseline, "hours": base_hours}
+            day_summary["baseline"] = {**summary["baseline"], "correlation": base_days.get(day["day"]),
+                                       **compare(base_hours, day_hours)}
+        path = folder / f"day-{day['day']}{suffix}"
+        draw_chart(path, readings, day_hours, day_baseline, pressure, annotations, frames, params, local, day_summary,
+                   (start, end), day_only=True)
+        written.append(str(path))
+    return written
+
+
+def draw_chart(path: Path, readings, hours, baseline, pressure, annotations, frames, params, local, summary, zoom,
+               day_only: bool = False) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.dates as mdates
@@ -20,12 +50,12 @@ def draw_chart(path: Path, readings, hours, baseline, pressure, annotations, fra
 
     apply_theme(plt)
     text = labels(summary, baseline is not None)
-    panels = ["level"] + (["zoom"] if zoom else []) + ["hours"]
+    panels = ["zoom", "hours"] if day_only else ["level"] + (["zoom"] if zoom else []) + ["hours"]
     fig, axes = plt.subplots(len(panels), 1, figsize=(14, 3.6 * len(panels) + 1.6),
                              gridspec_kw={"height_ratios": [PANEL_RATIOS[p] for p in panels]})
     _header(fig, summary, text, baseline is not None)
     step = max(1, int(POINTS_PER_MINUTE / (readings[1].time - readings[0].time))) if len(readings) > 1 else 1
-    span = (readings[0].time, readings[-1].time)
+    span = (zoom[0].timestamp(), zoom[1].timestamp()) if day_only else (readings[0].time, readings[-1].time)
 
     for ax, panel in zip(axes, panels):
         ax.grid(alpha=0.25)
@@ -37,8 +67,13 @@ def draw_chart(path: Path, readings, hours, baseline, pressure, annotations, fra
                             zoom if panel == "zoom" else None)
         if panel == "zoom":
             ax.set_xlim(*zoom)
-            ax.set_title(f"Zoom: {zoom[0]:%b %d %H:%M} to {zoom[1]:%b %d %H:%M} local", loc="left")
-            ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d %H:%M", tz=local))
+            title = (f"{zoom[0]:%A %b %d}: tank level (left axis) and pressure (right axis, hPa)" if day_only
+                     else f"Zoom: {zoom[0]:%b %d %H:%M} to {zoom[1]:%b %d %H:%M} local")
+            ax.set_title(title, loc="left", fontsize=12 if day_only else None, fontweight="bold" if day_only else None)
+            if day_only:
+                time_axis(ax, mdates, local, *span)
+            else:
+                ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d %H:%M", tz=local))
         else:
             time_axis(ax, mdates, local, *span)
             if zoom:
