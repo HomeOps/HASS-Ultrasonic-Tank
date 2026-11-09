@@ -23,21 +23,27 @@ also exactly what the integration receives, so a replay sees the same frames.
 
 ## Entities
 
-Only two instruments are recorded, nothing else:
+Only the two instruments' raw readings are recorded, nothing else:
 
-| Entity | Role |
-|---|---|
-| `sensor.driveway_water_tank_sensor_tank_distance_raw` | **Model input.** Raw ultrasonic distance, m |
-| `sensor.aboveground_water_tank_pressure` | **Validation only.** Hydrostatic sensor, hPa. Sparse, often `unavailable` |
-| `sensor.aboveground_water_tank_level` | **Validation only.** The same pressure sensor as a %. Adjust it with 5 % → empty, 80 % → full |
+| Entity | Unit | Role |
+|---|---|---|
+| `sensor.driveway_water_tank_sensor_tank_distance_raw` | m | **Model input.** Raw ultrasonic distance |
+| `sensor.aboveground_water_tank_pressure` | hPa | **Correlation only.** Hydrostatic sensor. Sparse, often `unavailable` |
 
-The pressure sensor is the independent reference. **It is never a model
-input,** and it will be retired.
+**Pressure is not a level.** It is a different physical quantity, and the
+replay never converts it into one: it uses pressure only to check that the
+model's level rises, falls and holds when pressure does, and keeps the same
+order (rank correlation). It is never a model input, and it will be retired.
 
-## Hand-entered truth: `reference-annotations.csv`
+Files up to 2026-11-08 also hold `sensor.aboveground_water_tank_level`, a %
+that HA computes from the pressure. It is no longer recorded, and the replay
+refuses to read it.
+
+## Hand-entered level: `reference-annotations.csv`
 
 Where the pressure sensor has no data, the owner's knowledge of the tank is
-recorded as a level range over a time span:
+recorded as a level range over a time span. This is a level in %, so the
+replay checks it as one:
 
 | Column | Meaning |
 |---|---|
@@ -52,7 +58,8 @@ recorded as a level range over a time span:
 ## Long-term statistics: `statistics/`
 
 HA's statistics for the raw sensor and the pressure level (the hPa entity has
-no statistics in HA), recovered from the recorder. Columns `Start, StatisticId,
+no statistics in HA), recovered from the recorder. The pressure level there is
+HA's % made from hPa: use it for timing only, never as the tank's level. Columns `Start, StatisticId,
 Mean, Min, Max`, one file per day:
 
 - `statistics/hour/YYYY-MM-DD.csv`: hourly, raw since 2026-07-26 and pressure
