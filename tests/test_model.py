@@ -258,48 +258,44 @@ def test_out_of_range_frames_are_ignored():
     assert not model.has_lock
 
 
-CERTAIN_LEVEL_PCT = 60.0
+STEADY_LEVEL_PCT = 60.0
 RIVAL_DISTANCE_M = 1.60                 # a steady echo far below the surface the model follows
-RIVAL_EVERY = 3                         # one frame in this many lands on the rival: 33 %, above the 25 % default
-CERTAINTY_SETTLE_S = 2400.0             # longer than the 30-min certainty window
+RIVAL_EVERY = 3                         # one frame in this many lands on the rival: 33 %, more than the 20 % outside the default coverage
+UNCERTAINTY_SETTLE_S = 2400.0           # longer than the 30-min window
+NOISE_PCT = PARAMS.noise_m / PARAMS.span_m * 100.0
 
 
-def test_a_single_steady_echo_is_certain():
-    model, start = settled_model(CERTAIN_LEVEL_PCT, settle_s=CERTAINTY_SETTLE_S)
+def rival_every_third(surface_m: float):
+    frame = {"n": 0}
+
+    def distance(_t: float) -> float:
+        frame["n"] += 1
+        return RIVAL_DISTANCE_M if frame["n"] % RIVAL_EVERY == 0 else surface_m
+    return distance
+
+
+def test_a_single_steady_echo_has_only_the_noise_as_its_plus_minus():
+    model, start = settled_model(STEADY_LEVEL_PCT, settle_s=UNCERTAINTY_SETTLE_S)
     reading = model.tick(start + TICK_S)
+    assert reading.uncertainty_pct == pytest.approx(NOISE_PCT)
     assert reading.level_certain
-    assert reading.rival_m is None
-    assert reading.last_certain_level_pct == pytest.approx(CERTAIN_LEVEL_PCT, abs=0.5)
 
 
-def test_a_strong_competing_echo_makes_the_level_uncertain():
-    model, start = settled_model(CERTAIN_LEVEL_PCT, settle_s=CERTAINTY_SETTLE_S)
-    surface = distance_for(CERTAIN_LEVEL_PCT)
-    frame = {"n": 0}
-
-    def with_rival(_t: float) -> float:
-        frame["n"] += 1
-        return RIVAL_DISTANCE_M if frame["n"] % RIVAL_EVERY == 0 else surface
-
-    readings = run(model, start, CERTAINTY_SETTLE_S, with_rival)
-    last = readings[-1]
+def test_a_strong_competing_echo_widens_the_plus_minus_to_reach_it():
+    model, start = settled_model(STEADY_LEVEL_PCT, settle_s=UNCERTAINTY_SETTLE_S)
+    surface = distance_for(STEADY_LEVEL_PCT)
+    last = run(model, start, UNCERTAINTY_SETTLE_S, rival_every_third(surface))[-1]
+    rival_offset_pct = (RIVAL_DISTANCE_M - surface) / PARAMS.span_m * 100.0
+    assert last.uncertainty_pct == pytest.approx(rival_offset_pct, abs=1.0)
     assert not last.level_certain
-    assert last.rival_m == pytest.approx(RIVAL_DISTANCE_M, abs=PARAMS.uncertain_bin_m)
-    assert last.last_certain_time is not None and last.last_certain_time < last.time
-    assert last.last_certain_level_pct == pytest.approx(CERTAIN_LEVEL_PCT, abs=0.5)
+    assert last.level_pct == pytest.approx(STEADY_LEVEL_PCT, abs=1.0)    # the level itself still follows the surface
 
 
-def test_with_the_check_off_the_level_is_always_certain():
+def test_with_the_window_off_the_plus_minus_stays_at_the_noise():
     params = TankParameters(publish_median_s=0.0, uncertain_window_s=0.0)
-    model, start = settled_model(CERTAIN_LEVEL_PCT, settle_s=CERTAINTY_SETTLE_S, params=params)
-    frame = {"n": 0}
-    surface = distance_for(CERTAIN_LEVEL_PCT)
-
-    def with_rival(_t: float) -> float:
-        frame["n"] += 1
-        return RIVAL_DISTANCE_M if frame["n"] % RIVAL_EVERY == 0 else surface
-
-    assert run(model, start, CERTAINTY_SETTLE_S, with_rival)[-1].level_certain
+    model, start = settled_model(STEADY_LEVEL_PCT, settle_s=UNCERTAINTY_SETTLE_S, params=params)
+    last = run(model, start, UNCERTAINTY_SETTLE_S, rival_every_third(distance_for(STEADY_LEVEL_PCT)))[-1]
+    assert last.uncertainty_pct == pytest.approx(NOISE_PCT)
 
 
 class TestLowWaterAlarm:

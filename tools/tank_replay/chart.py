@@ -10,6 +10,7 @@ from .chart_style import (BACKGROUND, BASELINE, BASELINE_OFFSET_PTS, CANDIDATE, 
 from .scoring import DIRECTION_WINDOW_S, DISAGREEMENTS, compare
 
 PANEL_RATIOS = {"level": 1.0, "zoom": 1.2, "hours": 0.45}
+ERROR_BAR_EVERY_S = 1800            # one +/- bar every 30 min
 POINTS_PER_MINUTE = 60              # readings are thinned to one per minute for drawing
 
 
@@ -101,13 +102,13 @@ def _header(fig, summary, text, has_baseline) -> None:
              ha="right", va="top", fontsize=13, fontweight="bold")
     if has_baseline:
         b = summary["baseline"]["correlation"] or {}
-        title = (f"PREV ({text['baseline_ref'] or 'baseline'}) vs NEXT: hours wrong while certain "
+        title = (f"PREV ({text['baseline_ref'] or 'baseline'}) vs NEXT: hours wrong with a small +/- "
                  f"{b.get('disagree_certain', 0)} -> {c.get('disagree_certain', 0)} of {c.get('hours', 0)}")
-        detail = (f"Hours against pressure: PREV {b.get('disagree', 0)}, NEXT {c.get('disagree', 0)}; NEXT said its level was "
-                  f"uncertain in {c.get('uncertain_hours', 0)} hours.  "
+        detail = (f"Hours against pressure: PREV {b.get('disagree', 0)}, NEXT {c.get('disagree', 0)}; NEXT's +/- was over its "
+                  f"trust limit in {c.get('uncertain_hours', 0)} hours.  "
                   f"Rank correlation with pressure: PREV {_rho(b)}, NEXT {_rho(c)} (1 = always in the same order).\n")
     else:
-        title = (f"model.py: hours wrong while certain {c.get('disagree_certain', 0)} of {c.get('hours', 0)} "
+        title = (f"model.py: hours wrong with a small +/- {c.get('disagree_certain', 0)} of {c.get('hours', 0)} "
                  f"(against pressure {c.get('disagree', 0)}), rank correlation {_rho(c)}")
         detail = ""
     fig.suptitle(title, x=0.01, y=0.995, ha="left", fontsize=15, fontweight="bold")
@@ -133,9 +134,12 @@ def _level_panel(ax, readings, baseline, pressure, annotations, frames, params, 
                 color=BASELINE, lw=1.6, ls=DASHED, label=text["baseline"], zorder=5)
     c = readings[::step]
     ax.plot([to_dt(r.time) for r in c], [r.level_pct for r in c], color=CANDIDATE, lw=3.0, label=text["candidate"], zorder=4)
-    for i, (start, end) in enumerate(_uncertain_spans(readings, lo, hi)):
-        ax.axvspan(to_dt(start), to_dt(end), facecolor="none", edgecolor=RAW_DOTS, hatch="\\\\\\", lw=0, alpha=0.6, zorder=0,
-                   label="UNCERTAIN: NEXT says its level is a guess here (grey hatched background)" if i == 0 else None)
+    bars = [r for r in readings[::max(1, int(ERROR_BAR_EVERY_S / max(readings[1].time - readings[0].time, 1.0)))]
+            if lo <= r.time <= hi and getattr(r, "uncertainty_pct", None) is not None] if len(readings) > 1 else []
+    if bars:
+        ax.errorbar([to_dt(r.time) for r in bars], [r.level_pct for r in bars], yerr=[r.uncertainty_pct for r in bars],
+                    fmt="none", ecolor=CANDIDATE, elinewidth=1.3, capsize=4, capthick=1.3, alpha=0.9, zorder=4,
+                    label="NEXT +/- uncertainty (I-bars every 30 min: |<- the level could be anywhere in here ->|)")
     ax.set_ylim(-5, 115)
     ax.set_ylabel("level %")
     if not zoom:
@@ -153,24 +157,6 @@ def _level_panel(ax, readings, baseline, pressure, annotations, frames, params, 
     return twin
 
 
-def _uncertain_spans(readings, lo: float, hi: float) -> list[tuple[float, float]]:
-    """(start, end) of each run of ticks the model marked uncertain, inside [lo, hi]."""
-    spans: list[tuple[float, float]] = []
-    start = None
-    for r in readings:
-        if r.time < lo or r.time > hi:
-            continue
-        uncertain = not getattr(r, "level_certain", True)
-        if uncertain and start is None:
-            start = r.time
-        elif not uncertain and start is not None:
-            spans.append((start, r.time))
-            start = None
-    if start is not None:
-        spans.append((start, min(readings[-1].time, hi)))
-    return spans
-
-
 def _hours_panel(ax, hours, baseline, text) -> None:
     rows = [("NEXT", hours, CANDIDATE, 1.0)]
     if baseline:
@@ -179,7 +165,7 @@ def _hours_panel(ax, hours, baseline, text) -> None:
         for i, h in enumerate(h for h in row_hours if h.get("uncertain")):
             ax.axvspan(to_dt(h["time"] - DIRECTION_WINDOW_S / 2), to_dt(h["time"] + DIRECTION_WINDOW_S / 2), ymin=(y + 0.6) / 2.2 - 0.18,
                        ymax=(y + 0.6) / 2.2 + 0.18, facecolor="none", edgecolor=RAW_DOTS, hatch="\\\\\\", lw=0, alpha=0.6,
-                       label="hatched: the model said uncertain in this hour" if i == 0 and name == "NEXT" else None)
+                       label="hatched: the model's +/- was over its trust limit" if i == 0 and name == "NEXT" else None)
         for verdict in DISAGREEMENTS:
             marker, words = VERDICT_MARKERS[verdict]
             when = [to_dt(h["time"]) for h in row_hours if h["verdict"] == verdict]
@@ -189,6 +175,6 @@ def _hours_panel(ax, hours, baseline, text) -> None:
     ax.set_yticks([y for *_, y in rows], [n for n, *_ in rows])
     ax.set_ylim(-0.6, 1.6)
     ax.set_xlabel("Costa Rica time (each mark is one hour whose direction disagrees with pressure; no mark = agrees)")
-    ax.set_title("Hours where the level moved differently from pressure (a mark on a hatched hour was flagged uncertain)",
+    ax.set_title("Hours where the level moved differently from pressure (a mark on a hatched hour had a wide +/-)",
                  loc="left", fontsize=12, fontweight="bold")
     ax.legend(loc="upper left", fontsize=8.5, framealpha=0.85, ncols=4)

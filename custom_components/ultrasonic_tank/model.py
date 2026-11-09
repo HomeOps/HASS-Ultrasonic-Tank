@@ -28,15 +28,16 @@ local fill hours), so the swings between echoes are damped; a fill outside
 those hours, such as a truck delivery, shows up late.  While the surface is not visible
 the estimate coasts along the last *drain* velocity; it never invents a fill.
 
-Certainty
----------
+Uncertainty (+/-)
+-----------------
 Some wrong echoes are as steady as the surface, and nothing in the distance
-stream alone tells them apart.  So the model also says when its level is a
-guess: when a group of echoes away from the published surface holds at least
-``uncertain_rival_share`` of the last ``uncertain_window_s`` (weighted by how
-long each frame was held), the reading is marked uncertain and keeps the last
-level published while certain.  The low-water alarm holds its state while the
-level is uncertain.
+stream alone tells them apart.  So every reading carries a +/- in level
+points: the smallest radius around the published surface that holds
+``uncertain_coverage`` of the echoes of the last ``uncertain_window_s``
+(weighted by how long each frame was held).  A calm, clean surface gives the
+per-frame noise; a strong competing echo widens it to reach that echo.  Above
+``uncertain_alarm_pts`` the level is not trusted, and the low-water alarm holds
+its state.
 
 Units: distances in metres, times in seconds (epoch), level in percent of the
 usable span, volume in litres, flow in L/min, change in flow in L/min^2.
@@ -79,13 +80,12 @@ class TankParameters:
     fill_window_start_h: float = 5.0        # local hour the usual fill window opens (start == end: no window)
     fill_window_end_h: float = 8.0          # local hour it closes
     utc_offset_h: float = 0.0               # local time = UTC + this (the integration sets HA's time zone)
-    uncertain_window_s: float = 1800.0      # echoes this recent decide whether the level is certain; <= 0 = always certain
-    uncertain_check_s: float = 60.0         # re-decided this often
-    uncertain_bin_m: float = 0.05           # echoes are grouped in bins this wide (a bin and its two neighbours)
+    uncertain_window_s: float = 1800.0      # echoes this recent set the level's +/- ; <= 0 = off (always +/- noise)
+    uncertain_check_s: float = 60.0         # recomputed this often
     uncertain_hold_cap_s: float = 60.0      # a frame counts for how long it was held, at most this
-    uncertain_near_m: float = 0.10          # an echo this close to the published surface supports it
-    uncertain_rival_share: float = 0.25     # a group of echoes elsewhere holding this share makes the level uncertain
-    uncertain_min_frames: int = 30          # fewer frames in the window: not enough to call it uncertain
+    uncertain_coverage: float = 0.8         # the +/- reaches the echoes holding this share of the window
+    uncertain_min_frames: int = 30          # fewer frames in the window: the +/- keeps its last value
+    uncertain_alarm_pts: float = 10.0       # above this +/- the level is not trusted: the low-water alarm holds
 
     @property
     def span_m(self) -> float:
@@ -119,10 +119,8 @@ class TankReading:
     seconds_since_surface: float | None
     max_outflow_lpm: float
     max_inflow_lpm: float
-    level_certain: bool = True              # False: a strong echo elsewhere competes with the surface the level follows
-    rival_m: float | None = None            # distance of the strongest competing echo, while uncertain
-    last_certain_level_pct: float | None = None
-    last_certain_time: float | None = None
+    uncertainty_pct: float = 0.0            # the level is level_pct +/- this (points of level)
+    level_certain: bool = True              # uncertainty_pct <= uncertain_alarm_pts
 
 
 @dataclass
@@ -136,8 +134,6 @@ class _State:
     prev_flow_lpm: float | None = None
     flow_samples: list[float] = field(default_factory=list)
     change_samples: list[float] = field(default_factory=list)
-    last_certain_level_pct: float | None = None
-    last_certain_time: float | None = None
 
 
 class TankModel:
@@ -153,9 +149,8 @@ class TankModel:
         self._recent: deque[tuple[float, float]] = deque()   # (time, distance) of valid frames, for rise support
         self._beliefs: deque[tuple[float, float]] = deque()  # (time, level %) before publishing, for the median
         self._echoes: deque[tuple[float, float]] = deque()   # (time, distance) of every in-range frame, for certainty
-        self._certainty_checked: float | None = None
-        self._certain = True
-        self._rival_m: float | None = None
+        self._uncertainty_checked: float | None = None
+        self._uncertainty_pct = self._noise_pct()
 
     # ------------------------------------------------------------------ frames
     def add_frame(self, time: float, distance_m: float) -> bool:
@@ -248,9 +243,7 @@ class TankModel:
 
         seconds_since = None if not s.has_lock or s.last_valid is None else max(time - s.last_valid, 0.0)
         surface_m = p.floor_m - level / 100.0 * p.span_m
-        self._update_certainty(time, surface_m)
-        if self._certain:
-            s.last_certain_level_pct, s.last_certain_time = level, time
+        self._update_uncertainty(time, surface_m)
         return TankReading(
             time=time,
             level_pct=level,
@@ -262,49 +255,49 @@ class TankModel:
             seconds_since_surface=seconds_since,
             max_outflow_lpm=p.max_fall_pct_per_min(level) * p.litres_per_pct,
             max_inflow_lpm=p.max_inflow_lpm,
-            level_certain=self._certain,
-            rival_m=None if self._certain else self._rival_m,
-            last_certain_level_pct=s.last_certain_level_pct,
-            last_certain_time=s.last_certain_time,
+            uncertainty_pct=self._uncertainty_pct,
+            level_certain=self._uncertainty_pct <= p.uncertain_alarm_pts,
         )
 
-    def _update_certainty(self, time: float, surface_m: float) -> None:
-        """Uncertain while a group of echoes away from the published surface holds a large share of the window.
+    def _noise_pct(self) -> float:
+        return self.params.noise_m / self.params.span_m * 100.0
 
-        The level follows one echo; when another echo group is about as present, nothing in
-        the distance stream says which one is the water, so the level is a guess.  Echoes are
-        weighted by how long each was held (HA records only changes).  The stationary
-        reflector does not count unless the surface is near it.
+    def _update_uncertainty(self, time: float, surface_m: float) -> None:
+        """The level's +/-: the smallest radius around the published surface that holds
+        ``uncertain_coverage`` of the recent echoes, weighted by how long each was held.
+
+        On a calm surface nearly every echo sits on it and the +/- is the per-frame noise.
+        When another echo group holds a large share, nothing in the distance stream says
+        which one is the water, and the +/- widens to reach it.  The stationary reflector
+        does not count unless the surface is near it.
         """
         p = self.params
         if p.uncertain_window_s <= 0:
             return
-        if self._certainty_checked is not None and time - self._certainty_checked < p.uncertain_check_s:
+        if self._uncertainty_checked is not None and time - self._uncertainty_checked < p.uncertain_check_s:
             return
-        self._certainty_checked = time
+        self._uncertainty_checked = time
         frames = [f for f in self._echoes if f[0] >= time - p.uncertain_window_s]
         if len(frames) < p.uncertain_min_frames:
-            self._certain, self._rival_m = True, None
             return
         near_reflector = p.reflector_m > 0 and surface_m <= p.reflector_m + p.reflector_half_width_m + 0.05
-        weights: dict[int, float] = {}
-        total = 0.0
+        offsets: list[tuple[float, float]] = []
         for (t, x), (t_next, _) in zip(frames, frames[1:] + [(time, 0.0)]):
-            held = min(max(t_next - t, 0.0), p.uncertain_hold_cap_s)
-            total += held
-            if abs(x - surface_m) <= p.uncertain_near_m:
-                continue
             if p.reflector_m > 0 and not near_reflector and abs(x - p.reflector_m) < p.reflector_half_width_m:
                 continue
-            b = int(x / p.uncertain_bin_m)
-            weights[b] = weights.get(b, 0.0) + held
-        if total <= 0 or not weights:
-            self._certain, self._rival_m = True, None
+            offsets.append((abs(x - surface_m), min(max(t_next - t, 0.0), p.uncertain_hold_cap_s)))
+        total = sum(w for _, w in offsets)
+        if total <= 0:
             return
-        best = max(weights, key=lambda b: weights.get(b - 1, 0.0) + weights[b] + weights.get(b + 1, 0.0))
-        share = (weights.get(best - 1, 0.0) + weights[best] + weights.get(best + 1, 0.0)) / total
-        self._certain = share < p.uncertain_rival_share
-        self._rival_m = (best + 0.5) * p.uncertain_bin_m
+        offsets.sort()
+        reached = 0.0
+        radius_m = offsets[-1][0]
+        for offset, weight in offsets:
+            reached += weight
+            if reached >= p.uncertain_coverage * total:
+                radius_m = offset
+                break
+        self._uncertainty_pct = max(radius_m, p.noise_m) / p.span_m * 100.0
 
     # ------------------------------------------------------------ persistence
     def to_dict(self) -> dict[str, Any]:
@@ -350,8 +343,8 @@ class TankModel:
         return self._s.has_lock
 
     @property
-    def level_certain(self) -> bool:
-        return self._certain
+    def uncertainty_pct(self) -> float:
+        return self._uncertainty_pct
 
 
 class LowWaterAlarm:

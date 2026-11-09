@@ -50,13 +50,13 @@
     "sensor": {
       "volume": { "name": "Volume" },
       "level": { "name": "Level" },
+      "level_uncertainty": { "name": "Level uncertainty" },
       "net_flow": { "name": "Net flow" },
       "flow_change": { "name": "Flow change" },
       "surface_distance": { "name": "Surface distance" }
     },
     "binary_sensor": {
       "surface_locked": { "name": "Surface locked" },
-      "level_uncertain": { "name": "Level uncertain" },
       "low_water": { "name": "Low water" }
     }
   }
