@@ -9,11 +9,20 @@ Run with no arguments, it:
   1. for each fixed window in data/<Site>/benchmark.json, replays NEXT (the
      working tree's model.py) and PREV (model.py of the latest release tag,
      e.g. v0.2.0) from empty, ticking every 10 s as Home Assistant does;
-  2. scores both against the truth: the pressure sensor plus the owner's
-     reference-annotations.csv (scoring only, never a model input);
-  3. writes one chart per window, docs/replay-<from>-to-<to>.svg;
-  4. returns one result per window (Score, Days, Baseline with
-     better/worse/same counts, Window).
+  2. correlates both with the pressure sensor in hPa: rank correlation, and
+     hour by hour whether the level rises, falls or holds with pressure.
+     Pressure is a different physical quantity and is never converted into a
+     level, nor ever a model input. The owner's reference-annotations.csv
+     spans are a level in % and are checked as one;
+  3. writes one chart per window, docs/replay-<from>-to-<to>.svg, and one
+     chart per day for the last -RecentDays days (default 10),
+     docs/days/day-<date>.svg, all cut from one continuous replay of every
+     recorded day, so no day starts from empty;
+  4. returns one result per window (Correlation, Days, Owner, Baseline with
+     the hours NEXT fixed and broke, Window).
+
+The only inputs are the two raw readings: the ultrasonic distance (m) and
+the pressure (hPa). Nothing derived is read.
 
 This is part of the engineering process for every model change: run it and
 commit the regenerated docs/replay-*.svg with the PR. A window's file name
@@ -61,9 +70,23 @@ Chart: local start of an extra zoom panel (yyyy-MM-ddTHH:mm). Needs -ZoomTo.
 Chart: local end of the zoom panel.
 
 .PARAMETER Chart
-Write a chart to this path (.png or .svg, needs matplotlib): level, optional
-zoom, and error vs the reference. Dark mode, colour-blind safe. With -Open,
+Write a chart to this path (.png or .svg, needs matplotlib): level with pressure
+on its own hPa axis, optional zoom, and the hours that disagree with pressure. Dark mode, colour-blind safe. With -Open,
 open it after.
+
+.PARAMETER DayCharts
+Also write one PNG per Costa Rica day into this folder (day-yyyy-MM-dd.png),
+all cut from the same continuous replay, so no day starts from empty.
+
+.PARAMETER LastDays
+With -DayCharts: only the last N days get a chart.
+
+.PARAMETER DayFormat
+With -DayCharts: png (default) or svg.
+
+.PARAMETER RecentDays
+The standard run writes a day chart for this many of the most recent days
+into docs/days. Default 10.
 
 .PARAMETER TicksPath
 Write every published tick (level, volume, flow, lock, reference) to this CSV.
@@ -74,7 +97,7 @@ Python executable. Default: python on PATH.
 .EXAMPLE
 # The standard run: PREV (latest release) vs NEXT (this change) on every benchmark window,
 # writes docs/replay-<from>-to-<to>.svg
-.\tools\Invoke-TankReplay.ps1 | Format-Table Window, @{n='Prev';e={$_.Baseline.Score.mean}}, @{n='Next';e={$_.Score.mean}}
+.\tools\Invoke-TankReplay.ps1 | Format-Table Window, @{n='PrevDisagree';e={$_.Baseline.Correlation.disagree}}, @{n='NextDisagree';e={$_.Correlation.disagree}}, @{n='Hours';e={$_.Correlation.hours}}
 
 .EXAMPLE
 # How the model changed over time on one window
@@ -87,7 +110,7 @@ git log -p docs/replay-2026-11-01-to-2026-11-02.svg
 # Compare the shipped parameters against a candidate fix
 $base = .\tools\Invoke-TankReplay.ps1
 $test = .\tools\Invoke-TankReplay.ps1 -Parameter @{ full_m = 0.23 }
-$base.Score, $test.Score
+$base.Correlation, $test.Correlation
 
 .EXAMPLE
 # Before/after chart for a model change: the working tree vs the v0.2.0 gate
@@ -108,6 +131,10 @@ param(
     [string]$ZoomTo,
     [string]$Chart = (Join-Path (Split-Path $PSScriptRoot -Parent) 'docs'),
     [switch]$NoChart,
+    [string]$DayCharts,
+    [ValidateRange(1, 366)][int]$LastDays,
+    [ValidateSet('png', 'svg')][string]$DayFormat = 'png',
+    [ValidateRange(1, 366)][int]$RecentDays = 10,
     [switch]$Open,
     [string]$TicksPath,
     [string]$Python = 'python'
@@ -139,6 +166,22 @@ if (-not $AllData -and -not $From -and -not $To -and (Test-Path -LiteralPath $be
         Write-Verbose "Benchmark window $($window.from) .. $($window.to): $($window.what)"
         $windowResult = & $PSCommandPath @windowParams
         $windowResult | Add-Member -NotePropertyName Window -NotePropertyValue $window.what -PassThru
+    }
+    # The last days, one chart each, cut from one continuous replay of all the data:
+    # docs/days/day-<date>.svg. Older day charts are removed, so the folder always
+    # holds exactly the last $RecentDays days.
+    if ($Chart -and -not $NoChart -and -not $PSBoundParameters.ContainsKey('Chart')) {
+        $daysDir = Join-Path $Chart 'days'
+        $dayParams = @{} + $PSBoundParameters
+        $dayParams['AllData'] = $true
+        $dayParams['NoChart'] = $true
+        $dayParams['DayCharts'] = $daysDir
+        $dayParams['LastDays'] = $RecentDays
+        $dayParams['DayFormat'] = 'svg'
+        $dayResult = & $PSCommandPath @dayParams
+        $keep = @($dayResult.DayCharts | ForEach-Object { Split-Path $_ -Leaf })
+        Get-ChildItem -LiteralPath $daysDir -Filter 'day-*.svg' | Where-Object Name -notin $keep | Remove-Item
+        $dayResult | Add-Member -NotePropertyName Window -NotePropertyValue "Last $RecentDays days, one chart per day" -PassThru
     }
     return
 }
@@ -176,6 +219,11 @@ if ($Chart -and -not $NoChart) {
     }
     $replayArgs.AddRange([string[]]@('--chart', $chartPath))
 }
+if ($DayCharts) {
+    $dayChartDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($DayCharts)
+    $replayArgs.AddRange([string[]]@('--day-charts', $dayChartDir, '--day-format', $DayFormat))
+    if ($LastDays) { $replayArgs.AddRange([string[]]@('--day-charts-last', "$LastDays")) }
+}
 if ($TicksPath) {
     $ticksFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($TicksPath)
     $replayArgs.AddRange([string[]]@('--ticks', $ticksFile))
@@ -193,15 +241,23 @@ Write-Verbose ("Replay took {0:n1} s" -f ((Get-Date) - $started).TotalSeconds)
 
 $summary = ($output -join "`n") | ConvertFrom-Json
 
+function ConvertTo-CorrelationDay($day) {
+    [pscustomobject]@{
+        Day = $day.day; Samples = $day.samples; RankCorrelation = $day.rank_correlation; Hours = $day.hours
+        Disagree = $day.disagree; FalseMove = $day.false_move; MissedMove = $day.missed_move; WrongWay = $day.wrong_way
+    }
+}
+
 $result = [pscustomobject]@{
     PSTypeName       = 'UltrasonicTank.Replay'
     Start            = $summary.start
     End              = $summary.end
     Frames           = $summary.frames
-    ReferenceSamples = $summary.reference_samples
-    Score            = $summary.score
-    Days             = @($summary.days | ForEach-Object { [pscustomobject]@{ Day = $_.day; Samples = $_.samples; Mean = $_.mean; Median = $_.median; P90 = $_.p90; Max = $_.max; Bias = $_.bias } })
-    Inflows          = @($summary.inflows | ForEach-Object { [pscustomobject]@{ Start = $_.start; End = $_.end; PeakLpm = $_.peak_lpm; ReferenceBefore = $_.reference_before; ReferenceAfter = $_.reference_after } })
+    PressureSamples  = $summary.pressure_samples
+    Correlation      = $summary.correlation
+    Days             = @($summary.days | ForEach-Object { ConvertTo-CorrelationDay $_ })
+    Owner            = $summary.owner
+    Inflows          = @($summary.inflows | ForEach-Object { [pscustomobject]@{ Start = $_.start; End = $_.end; PeakLpm = $_.peak_lpm; PressureBeforeHpa = $_.pressure_before_hpa; PressureAfterHpa = $_.pressure_after_hpa } })
     SurfaceLockedPct = $summary.surface_locked_pct
     FinalLevelPct    = $summary.final_level_pct
     Overrides        = @($summary.overrides)
@@ -211,14 +267,16 @@ $result = [pscustomobject]@{
         [pscustomobject]@{
             Ref       = $summary.baseline.ref
             Overrides = @($summary.baseline.overrides)
-            Score     = $summary.baseline.score
-            Days      = @($summary.baseline.days | ForEach-Object { [pscustomobject]@{ Day = $_.day; Samples = $_.samples; Mean = $_.mean; Median = $_.median; P90 = $_.p90; Max = $_.max; Bias = $_.bias } })
+            Correlation = $summary.baseline.correlation
+            Days      = @($summary.baseline.days | ForEach-Object { ConvertTo-CorrelationDay $_ })
+            Owner     = $summary.baseline.owner
             Better    = $summary.baseline.better
             Worse     = $summary.baseline.worse
             Same      = $summary.baseline.same
         }
     }
     Chart            = $summary.chart
+    DayCharts        = @($summary.day_charts)
     TicksFile        = $summary.ticks_file
 }
 

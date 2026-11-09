@@ -9,22 +9,17 @@ BASELINE = "#F0E442"               # Okabe-Ito yellow: apart from the blue and t
 BASELINE_OFFSET_PTS = 4.0           # PREV is drawn this much higher, so it never hides NEXT
 RAW_DOTS = "#7d8590"               # mid grey: visible on the background, dimmer than PREV's line
 DASHED = (0, (6, 3))
-REFERENCE_GAP_S = 3 * 3600          # no line is drawn across a truth gap this long
+PRESSURE_MARKER = "D"               # hollow white diamonds
+VERDICT_MARKERS = {                 # shape names the kind of disagreement; colour only names the version
+    "false_move": ("^", "triangle: the level moved, pressure held"),
+    "missed_move": ("o", "hollow circle: pressure moved, the level held"),
+    "wrong_way": ("X", "cross: the level moved the opposite way"),
+}
 DAY_TICKS_ABOVE_DAYS = 4            # longer replays get one tick per day, shorter ones hours
 
 
 def to_dt(when: float) -> datetime:
     return datetime.fromtimestamp(when, timezone.utc)
-
-
-def with_gaps(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    """Insert a NaN where the truth had no data for a long time, so no line is drawn across it."""
-    out = []
-    for i, (t, v) in enumerate(points):
-        if i and t - points[i - 1][0] > REFERENCE_GAP_S:
-            out.append((t - 1, float("nan")))
-        out.append((t, v))
-    return out
 
 
 def labels(summary: dict, has_baseline: bool) -> dict:
@@ -38,7 +33,7 @@ def labels(summary: dict, has_baseline: bool) -> dict:
     if has_baseline and summary["baseline"]["overrides"]:
         baseline += " [" + ", ".join(summary["baseline"]["overrides"]) + "]"
     return {"candidate": candidate, "baseline": baseline, "baseline_ref": ref,
-            "truth": "TRUTH: pressure sensor (hollow diamonds)"}
+            "pressure": "PRESSURE: hPa on the right axis (hollow diamonds), correlation only"}
 
 
 def apply_theme(plt) -> None:
