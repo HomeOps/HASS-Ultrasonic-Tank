@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .chart_style import (BACKGROUND, BASELINE, BASELINE_OFFSET_PTS, CANDIDATE, DASHED, PRESSURE_MARKER, RAW_DOTS,
                           SAVE_METADATA, VERDICT_MARKERS, apply_theme, labels, time_axis, to_dt)
-from .scoring import DISAGREEMENTS, compare
+from .scoring import DIRECTION_WINDOW_S, DISAGREEMENTS, compare
 
 PANEL_RATIOS = {"level": 1.0, "zoom": 1.2, "hours": 0.45}
 POINTS_PER_MINUTE = 60              # readings are thinned to one per minute for drawing
@@ -101,12 +101,14 @@ def _header(fig, summary, text, has_baseline) -> None:
              ha="right", va="top", fontsize=13, fontweight="bold")
     if has_baseline:
         b = summary["baseline"]["correlation"] or {}
-        title = (f"PREV ({text['baseline_ref'] or 'baseline'}) vs NEXT: hours against pressure "
-                 f"{b.get('disagree', 0)} -> {c.get('disagree', 0)} of {c.get('hours', 0)}")
-        detail = (f"Rank correlation with pressure: PREV {_rho(b)}, NEXT {_rho(c)} (1 = always in the same order).  "
-                  f"Hours NEXT fixed: {summary['baseline']['better']}, broke: {summary['baseline']['worse']}.\n")
+        title = (f"PREV ({text['baseline_ref'] or 'baseline'}) vs NEXT: hours wrong while certain "
+                 f"{b.get('disagree_certain', 0)} -> {c.get('disagree_certain', 0)} of {c.get('hours', 0)}")
+        detail = (f"Hours against pressure: PREV {b.get('disagree', 0)}, NEXT {c.get('disagree', 0)}; NEXT said its level was "
+                  f"uncertain in {c.get('uncertain_hours', 0)} hours.  "
+                  f"Rank correlation with pressure: PREV {_rho(b)}, NEXT {_rho(c)} (1 = always in the same order).\n")
     else:
-        title = f"model.py: hours against pressure {c.get('disagree', 0)} of {c.get('hours', 0)}, rank correlation {_rho(c)}"
+        title = (f"model.py: hours wrong while certain {c.get('disagree_certain', 0)} of {c.get('hours', 0)} "
+                 f"(against pressure {c.get('disagree', 0)}), rank correlation {_rho(c)}")
         detail = ""
     fig.suptitle(title, x=0.01, y=0.995, ha="left", fontsize=15, fontweight="bold")
     fig.text(0.01, 0.958,
@@ -121,7 +123,7 @@ def _level_panel(ax, readings, baseline, pressure, annotations, frames, params, 
     raw = [(t, (params.floor_m - d) / params.span_m * 100.0) for t, d in frames if lo <= t <= hi]
     ax.scatter([to_dt(t) for t, _ in raw], [v for _, v in raw], s=2.0, color=RAW_DOTS, linewidths=0,
                label="RAW: ultrasonic distance as level (small grey dots, the only model input)", rasterized=True, zorder=2)
-    for i, span in enumerate(annotations):
+    for i, span in enumerate(s for s in annotations if s["end"] >= lo and s["start"] <= hi):
         ax.fill_between([to_dt(span["start"]), to_dt(span["end"])], span["min"], span["max"] + 2, facecolor="none",
                         edgecolor="white", hatch="////", lw=0.8, alpha=0.8, zorder=1,
                         label=f"OWNER: {span['source']} says {span['min']:.0f}-{span['max']:.0f} % (hatched band)" if i == 0 else None)
@@ -131,6 +133,9 @@ def _level_panel(ax, readings, baseline, pressure, annotations, frames, params, 
                 color=BASELINE, lw=1.6, ls=DASHED, label=text["baseline"], zorder=5)
     c = readings[::step]
     ax.plot([to_dt(r.time) for r in c], [r.level_pct for r in c], color=CANDIDATE, lw=3.0, label=text["candidate"], zorder=4)
+    for i, (start, end) in enumerate(_uncertain_spans(readings, lo, hi)):
+        ax.axvspan(to_dt(start), to_dt(end), facecolor="none", edgecolor=RAW_DOTS, hatch="\\\\\\", lw=0, alpha=0.6, zorder=0,
+                   label="UNCERTAIN: NEXT says its level is a guess here (grey hatched background)" if i == 0 else None)
     ax.set_ylim(-5, 115)
     ax.set_ylabel("level %")
     if not zoom:
@@ -148,11 +153,33 @@ def _level_panel(ax, readings, baseline, pressure, annotations, frames, params, 
     return twin
 
 
+def _uncertain_spans(readings, lo: float, hi: float) -> list[tuple[float, float]]:
+    """(start, end) of each run of ticks the model marked uncertain, inside [lo, hi]."""
+    spans: list[tuple[float, float]] = []
+    start = None
+    for r in readings:
+        if r.time < lo or r.time > hi:
+            continue
+        uncertain = not getattr(r, "level_certain", True)
+        if uncertain and start is None:
+            start = r.time
+        elif not uncertain and start is not None:
+            spans.append((start, r.time))
+            start = None
+    if start is not None:
+        spans.append((start, min(readings[-1].time, hi)))
+    return spans
+
+
 def _hours_panel(ax, hours, baseline, text) -> None:
     rows = [("NEXT", hours, CANDIDATE, 1.0)]
     if baseline:
         rows.append(("PREV", baseline["hours"], BASELINE, 0.0))
     for name, row_hours, colour, y in rows:
+        for i, h in enumerate(h for h in row_hours if h.get("uncertain")):
+            ax.axvspan(to_dt(h["time"] - DIRECTION_WINDOW_S / 2), to_dt(h["time"] + DIRECTION_WINDOW_S / 2), ymin=(y + 0.6) / 2.2 - 0.18,
+                       ymax=(y + 0.6) / 2.2 + 0.18, facecolor="none", edgecolor=RAW_DOTS, hatch="\\\\\\", lw=0, alpha=0.6,
+                       label="hatched: the model said uncertain in this hour" if i == 0 and name == "NEXT" else None)
         for verdict in DISAGREEMENTS:
             marker, words = VERDICT_MARKERS[verdict]
             when = [to_dt(h["time"]) for h in row_hours if h["verdict"] == verdict]
@@ -162,5 +189,6 @@ def _hours_panel(ax, hours, baseline, text) -> None:
     ax.set_yticks([y for *_, y in rows], [n for n, *_ in rows])
     ax.set_ylim(-0.6, 1.6)
     ax.set_xlabel("Costa Rica time (each mark is one hour whose direction disagrees with pressure; no mark = agrees)")
-    ax.set_title("Hours where the level moved differently from pressure (fewer is better)", loc="left", fontsize=12, fontweight="bold")
-    ax.legend(loc="upper left", fontsize=8.5, framealpha=0.85, ncols=3)
+    ax.set_title("Hours where the level moved differently from pressure (a mark on a hatched hour was flagged uncertain)",
+                 loc="left", fontsize=12, fontweight="bold")
+    ax.legend(loc="upper left", fontsize=8.5, framealpha=0.85, ncols=4)

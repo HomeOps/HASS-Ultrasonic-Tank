@@ -245,6 +245,7 @@ function ConvertTo-CorrelationDay($day) {
     [pscustomobject]@{
         Day = $day.day; Samples = $day.samples; RankCorrelation = $day.rank_correlation; Hours = $day.hours
         Disagree = $day.disagree; FalseMove = $day.false_move; MissedMove = $day.missed_move; WrongWay = $day.wrong_way
+        UncertainHours = $day.uncertain_hours; DisagreeCertain = $day.disagree_certain
     }
 }
 

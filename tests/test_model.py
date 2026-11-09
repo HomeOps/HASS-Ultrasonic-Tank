@@ -258,13 +258,71 @@ def test_out_of_range_frames_are_ignored():
     assert not model.has_lock
 
 
+CERTAIN_LEVEL_PCT = 60.0
+RIVAL_DISTANCE_M = 1.60                 # a steady echo far below the surface the model follows
+RIVAL_EVERY = 3                         # one frame in this many lands on the rival: 33 %, above the 25 % default
+CERTAINTY_SETTLE_S = 2400.0             # longer than the 30-min certainty window
+
+
+def test_a_single_steady_echo_is_certain():
+    model, start = settled_model(CERTAIN_LEVEL_PCT, settle_s=CERTAINTY_SETTLE_S)
+    reading = model.tick(start + TICK_S)
+    assert reading.level_certain
+    assert reading.rival_m is None
+    assert reading.last_certain_level_pct == pytest.approx(CERTAIN_LEVEL_PCT, abs=0.5)
+
+
+def test_a_strong_competing_echo_makes_the_level_uncertain():
+    model, start = settled_model(CERTAIN_LEVEL_PCT, settle_s=CERTAINTY_SETTLE_S)
+    surface = distance_for(CERTAIN_LEVEL_PCT)
+    frame = {"n": 0}
+
+    def with_rival(_t: float) -> float:
+        frame["n"] += 1
+        return RIVAL_DISTANCE_M if frame["n"] % RIVAL_EVERY == 0 else surface
+
+    readings = run(model, start, CERTAINTY_SETTLE_S, with_rival)
+    last = readings[-1]
+    assert not last.level_certain
+    assert last.rival_m == pytest.approx(RIVAL_DISTANCE_M, abs=PARAMS.uncertain_bin_m)
+    assert last.last_certain_time is not None and last.last_certain_time < last.time
+    assert last.last_certain_level_pct == pytest.approx(CERTAIN_LEVEL_PCT, abs=0.5)
+
+
+def test_with_the_check_off_the_level_is_always_certain():
+    params = TankParameters(publish_median_s=0.0, uncertain_window_s=0.0)
+    model, start = settled_model(CERTAIN_LEVEL_PCT, settle_s=CERTAINTY_SETTLE_S, params=params)
+    frame = {"n": 0}
+    surface = distance_for(CERTAIN_LEVEL_PCT)
+
+    def with_rival(_t: float) -> float:
+        frame["n"] += 1
+        return RIVAL_DISTANCE_M if frame["n"] % RIVAL_EVERY == 0 else surface
+
+    assert run(model, start, CERTAINTY_SETTLE_S, with_rival)[-1].level_certain
+
+
 class TestLowWaterAlarm:
     threshold = 25.0
     delay_s = 900.0
     max_coast_s = 1800.0
 
-    def reading(self, time: float, level: float, seen: float | None) -> TankReading:
-        return TankReading(time, level, level * 50, 0.0, 0.0, 1.0, seen is not None and seen < 120, seen, 10.0, 125.0)
+    def reading(self, time: float, level: float, seen: float | None, certain: bool = True) -> TankReading:
+        return TankReading(time, level, level * 50, 0.0, 0.0, 1.0, seen is not None and seen < 120, seen, 10.0, 125.0,
+                           level_certain=certain)
+
+    def test_an_uncertain_level_cannot_raise_it(self):
+        alarm = self.alarm()
+        alarm.update(self.reading(0, 50, 5))
+        for minute in range(0, 120):
+            alarm.update(self.reading(minute * 60, 5, 5, certain=False))
+        assert alarm.is_on is False
+
+    def test_an_uncertain_level_cannot_clear_it(self):
+        alarm = self.alarm()
+        alarm.update(self.reading(0, 10, 5))
+        alarm.update(self.reading(self.delay_s, 10, 5))
+        assert alarm.update(self.reading(self.delay_s + 60, 90, 5, certain=False)) is True
 
     def alarm(self) -> LowWaterAlarm:
         return LowWaterAlarm(self.threshold, self.max_coast_s, self.delay_s)

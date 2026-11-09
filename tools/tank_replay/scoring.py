@@ -15,6 +15,7 @@ as agreeing. The owner's hand-entered spans in reference-annotations.csv are a l
 """
 from __future__ import annotations
 
+from bisect import bisect_left
 from datetime import datetime
 
 INFLOW_THRESHOLD_LPM = 20.0
@@ -25,6 +26,7 @@ PRESSURE_FLAT_HPA = 3.0             # hour-to-hour change under this is flat (th
 PRESSURE_MOVE_HPA = 8.0             # over this it is a real rise or fall
 LEVEL_FLAT_PTS = 2.0
 LEVEL_MOVE_PTS = 5.0
+UNCERTAIN_SHARE = 0.25              # an hour check is "uncertain" when the model said so for this share of its ticks
 
 AGREE = "agree"
 FALSE_MOVE = "false_move"           # the level moved; pressure held
@@ -146,6 +148,19 @@ def _hours(pairs: list[tuple[float, float, float]]) -> list[dict]:
     return hours
 
 
+def mark_uncertain(hours: list[dict], readings) -> None:
+    """Flag each hour check whose two hours the model itself called uncertain for UNCERTAIN_SHARE of ticks or more.
+
+    Models without a certainty flag (older releases) are always certain."""
+    times = [r.time for r in readings]
+    flags = [not getattr(r, "level_certain", True) for r in readings]
+    for h in hours:
+        lo = bisect_left(times, h["time"] - DIRECTION_WINDOW_S)
+        hi = bisect_left(times, h["time"] + DIRECTION_WINDOW_S)
+        span = flags[lo:hi]
+        h["uncertain"] = bool(span) and sum(span) / len(span) >= UNCERTAIN_SHARE
+
+
 def correlation(pairs: list[tuple[float, float, float]], hours: list[dict]) -> dict | None:
     if not pairs:
         return None
@@ -157,6 +172,8 @@ def correlation(pairs: list[tuple[float, float, float]], hours: list[dict]) -> d
         "hours": len(hours),
         **counts,
         "disagree": sum(counts[v] for v in DISAGREEMENTS),
+        "uncertain_hours": sum(1 for h in hours if h.get("uncertain")),
+        "disagree_certain": sum(1 for h in hours if h["verdict"] != AGREE and not h.get("uncertain")),
     }
 
 
@@ -187,6 +204,7 @@ def evaluate(model_module, params, frames, pressure, annotations, tick_s, local)
         if reading is not None:
             pairs.append((when, hpa, reading.level_pct))
     hours = _hours(pairs)
+    mark_uncertain(hours, readings)
 
     def day_of(when: float) -> str:
         return datetime.fromtimestamp(when, local).date().isoformat()

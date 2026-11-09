@@ -98,7 +98,11 @@ class TankSensor(TankEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         reading = self.hub.reading
-        if reading is None or self.entity_description.key != "net_flow":
+        if reading is None:
+            return None
+        if self.entity_description.key == "level":
+            return {"certain": reading.level_certain}
+        if self.entity_description.key != "net_flow":
             return None
         return {
             "max_outflow_lpm": round(reading.max_outflow_lpm, 2),

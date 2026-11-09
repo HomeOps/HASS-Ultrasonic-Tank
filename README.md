@@ -11,6 +11,7 @@ looking down into a gravity-drained water tank into:
 | Level | % (derived from volume) | — |
 | Surface distance | m | `distance` (diagnostic) |
 | Surface locked | on/off | diagnostic |
+| Level uncertain | on/off | — |
 | Low water | on/off | `problem` |
 
 ## Why a model instead of a filter
@@ -80,9 +81,18 @@ for a 5000 L, ~2 m vertical tank:
 | Low water: delay | 15 min | |
 | First start: history to replay | 12 h | |
 
-**Low water is only decided while the surface has been seen recently.** While
-the model is coasting, the alarm holds its last state, so a blind estimate can
-neither announce an empty tank nor hide one.
+**Low water is only decided while the surface has been seen recently and the
+level is certain.** While the model is coasting or the level is uncertain, the
+alarm holds its last state, so a guessed estimate can neither announce an empty
+tank nor hide one.
+
+**Level uncertain** turns on when, over the last 30 min, a group of echoes away
+from the surface the level follows holds at least 25 % of the time. Some wrong
+echoes are as steady as the water itself, and nothing in the distance stream
+says which one is real, so the level is then a guess. Its attributes give the
+competing echo's distance and the last level published while certain, and when.
+On the reference tank, 33 of the 35 hours where the level moved differently from
+the pressure sensor (Oct 25 – Nov 8) were flagged.
 
 **State survives restarts** in Home Assistant's storage. Nothing is written to
 the sensor device's flash. On first install, the model replays the last 12 h

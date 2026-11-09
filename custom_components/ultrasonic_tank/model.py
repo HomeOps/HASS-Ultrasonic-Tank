@@ -28,6 +28,16 @@ local fill hours), so the swings between echoes are damped; a fill outside
 those hours, such as a truck delivery, shows up late.  While the surface is not visible
 the estimate coasts along the last *drain* velocity; it never invents a fill.
 
+Certainty
+---------
+Some wrong echoes are as steady as the surface, and nothing in the distance
+stream alone tells them apart.  So the model also says when its level is a
+guess: when a group of echoes away from the published surface holds at least
+``uncertain_rival_share`` of the last ``uncertain_window_s`` (weighted by how
+long each frame was held), the reading is marked uncertain and keeps the last
+level published while certain.  The low-water alarm holds its state while the
+level is uncertain.
+
 Units: distances in metres, times in seconds (epoch), level in percent of the
 usable span, volume in litres, flow in L/min, change in flow in L/min^2.
 """
@@ -69,6 +79,13 @@ class TankParameters:
     fill_window_start_h: float = 5.0        # local hour the usual fill window opens (start == end: no window)
     fill_window_end_h: float = 8.0          # local hour it closes
     utc_offset_h: float = 0.0               # local time = UTC + this (the integration sets HA's time zone)
+    uncertain_window_s: float = 1800.0      # echoes this recent decide whether the level is certain; <= 0 = always certain
+    uncertain_check_s: float = 60.0         # re-decided this often
+    uncertain_bin_m: float = 0.05           # echoes are grouped in bins this wide (a bin and its two neighbours)
+    uncertain_hold_cap_s: float = 60.0      # a frame counts for how long it was held, at most this
+    uncertain_near_m: float = 0.10          # an echo this close to the published surface supports it
+    uncertain_rival_share: float = 0.25     # a group of echoes elsewhere holding this share makes the level uncertain
+    uncertain_min_frames: int = 30          # fewer frames in the window: not enough to call it uncertain
 
     @property
     def span_m(self) -> float:
@@ -102,6 +119,10 @@ class TankReading:
     seconds_since_surface: float | None
     max_outflow_lpm: float
     max_inflow_lpm: float
+    level_certain: bool = True              # False: a strong echo elsewhere competes with the surface the level follows
+    rival_m: float | None = None            # distance of the strongest competing echo, while uncertain
+    last_certain_level_pct: float | None = None
+    last_certain_time: float | None = None
 
 
 @dataclass
@@ -115,6 +136,8 @@ class _State:
     prev_flow_lpm: float | None = None
     flow_samples: list[float] = field(default_factory=list)
     change_samples: list[float] = field(default_factory=list)
+    last_certain_level_pct: float | None = None
+    last_certain_time: float | None = None
 
 
 class TankModel:
@@ -129,6 +152,10 @@ class TankModel:
         self._change: deque[float] = deque(self._s.change_samples, maxlen=self._window(self.params.change_window_s))
         self._recent: deque[tuple[float, float]] = deque()   # (time, distance) of valid frames, for rise support
         self._beliefs: deque[tuple[float, float]] = deque()  # (time, level %) before publishing, for the median
+        self._echoes: deque[tuple[float, float]] = deque()   # (time, distance) of every in-range frame, for certainty
+        self._certainty_checked: float | None = None
+        self._certain = True
+        self._rival_m: float | None = None
 
     # ------------------------------------------------------------------ frames
     def add_frame(self, time: float, distance_m: float) -> bool:
@@ -140,6 +167,10 @@ class TankModel:
             s.last_valid = time
             return False
         x = min(distance_m, p.floor_m)      # beyond-floor echoes are the floor
+        if p.uncertain_window_s > 0:
+            self._echoes.append((time, x))
+            while self._echoes and self._echoes[0][0] < time - p.uncertain_window_s:
+                self._echoes.popleft()
         if p.max_rise_gap_s > 0:
             self._recent.append((time, x))
             while self._recent and self._recent[0][0] < time - p.rise_support_window_s:
@@ -216,18 +247,64 @@ class TankModel:
         self._change.append(change)
 
         seconds_since = None if not s.has_lock or s.last_valid is None else max(time - s.last_valid, 0.0)
+        surface_m = p.floor_m - level / 100.0 * p.span_m
+        self._update_certainty(time, surface_m)
+        if self._certain:
+            s.last_certain_level_pct, s.last_certain_time = level, time
         return TankReading(
             time=time,
             level_pct=level,
             volume_l=level * p.litres_per_pct,
             net_flow_lpm=flow,
             flow_change_lpm2=sum(self._change) / len(self._change),
-            surface_m=p.floor_m - level / 100.0 * p.span_m,
+            surface_m=surface_m,
             surface_locked=seconds_since is not None and seconds_since <= p.lock_window_s,
             seconds_since_surface=seconds_since,
             max_outflow_lpm=p.max_fall_pct_per_min(level) * p.litres_per_pct,
             max_inflow_lpm=p.max_inflow_lpm,
+            level_certain=self._certain,
+            rival_m=None if self._certain else self._rival_m,
+            last_certain_level_pct=s.last_certain_level_pct,
+            last_certain_time=s.last_certain_time,
         )
+
+    def _update_certainty(self, time: float, surface_m: float) -> None:
+        """Uncertain while a group of echoes away from the published surface holds a large share of the window.
+
+        The level follows one echo; when another echo group is about as present, nothing in
+        the distance stream says which one is the water, so the level is a guess.  Echoes are
+        weighted by how long each was held (HA records only changes).  The stationary
+        reflector does not count unless the surface is near it.
+        """
+        p = self.params
+        if p.uncertain_window_s <= 0:
+            return
+        if self._certainty_checked is not None and time - self._certainty_checked < p.uncertain_check_s:
+            return
+        self._certainty_checked = time
+        frames = [f for f in self._echoes if f[0] >= time - p.uncertain_window_s]
+        if len(frames) < p.uncertain_min_frames:
+            self._certain, self._rival_m = True, None
+            return
+        near_reflector = p.reflector_m > 0 and surface_m <= p.reflector_m + p.reflector_half_width_m + 0.05
+        weights: dict[int, float] = {}
+        total = 0.0
+        for (t, x), (t_next, _) in zip(frames, frames[1:] + [(time, 0.0)]):
+            held = min(max(t_next - t, 0.0), p.uncertain_hold_cap_s)
+            total += held
+            if abs(x - surface_m) <= p.uncertain_near_m:
+                continue
+            if p.reflector_m > 0 and not near_reflector and abs(x - p.reflector_m) < p.reflector_half_width_m:
+                continue
+            b = int(x / p.uncertain_bin_m)
+            weights[b] = weights.get(b, 0.0) + held
+        if total <= 0 or not weights:
+            self._certain, self._rival_m = True, None
+            return
+        best = max(weights, key=lambda b: weights.get(b - 1, 0.0) + weights[b] + weights.get(b + 1, 0.0))
+        share = (weights.get(best - 1, 0.0) + weights[best] + weights.get(best + 1, 0.0)) / total
+        self._certain = share < p.uncertain_rival_share
+        self._rival_m = (best + 0.5) * p.uncertain_bin_m
 
     # ------------------------------------------------------------ persistence
     def to_dict(self) -> dict[str, Any]:
@@ -272,13 +349,18 @@ class TankModel:
     def has_lock(self) -> bool:
         return self._s.has_lock
 
+    @property
+    def level_certain(self) -> bool:
+        return self._certain
+
 
 class LowWaterAlarm:
     """Low-water flag that a coasted estimate can neither raise nor clear.
 
     ON once the level has stayed below ``threshold_pct`` for ``delay_s`` while
-    the surface was seen within ``max_coast_s``.  While the model is coasting
-    longer than that, the flag holds its last value: a blind estimate must never
+    the surface was seen within ``max_coast_s`` and the level was certain.  While
+    the model is coasting longer than that, or a competing echo makes the level
+    uncertain, the flag holds its last value: a guessed estimate must never
     announce an empty tank (or hide one).
     """
 
@@ -289,8 +371,9 @@ class LowWaterAlarm:
 
     def update(self, reading: TankReading) -> bool | None:
         seen = reading.seconds_since_surface
-        if seen is None or seen > self.max_coast_s:
-            return self.is_on                       # blind: hold
+        if seen is None or seen > self.max_coast_s or not reading.level_certain:
+            self._low_since = None                  # the delay restarts once the level is trusted again
+            return self.is_on                       # blind or uncertain: hold
         if reading.level_pct < self.threshold_pct:
             if self._low_since is None:
                 self._low_since = reading.time
