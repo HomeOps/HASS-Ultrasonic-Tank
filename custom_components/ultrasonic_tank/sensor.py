@@ -1,4 +1,4 @@
-"""Volume, level, net flow, change in flow and surface distance."""
+"""Volume, level, level uncertainty (+/-), net flow, change in flow and surface distance."""
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -45,6 +45,15 @@ SENSORS: tuple[TankSensorDescription, ...] = (
         suggested_display_precision=1,
         icon="mdi:water-percent",
         value=lambda r: r.level_pct,
+    ),
+    TankSensorDescription(
+        key="level_uncertainty",
+        translation_key="level_uncertainty",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        icon="mdi:plus-minus-variant",
+        value=lambda r: r.uncertainty_pct,
     ),
     TankSensorDescription(
         key="net_flow",
@@ -98,7 +107,11 @@ class TankSensor(TankEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         reading = self.hub.reading
-        if reading is None or self.entity_description.key != "net_flow":
+        if reading is None:
+            return None
+        if self.entity_description.key == "level":
+            return {"uncertainty_pct": round(reading.uncertainty_pct, 1), "trusted": reading.level_certain}
+        if self.entity_description.key != "net_flow":
             return None
         return {
             "max_outflow_lpm": round(reading.max_outflow_lpm, 2),

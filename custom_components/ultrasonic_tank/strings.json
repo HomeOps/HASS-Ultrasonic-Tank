@@ -50,6 +50,7 @@
     "sensor": {
       "volume": { "name": "Volume" },
       "level": { "name": "Level" },
+      "level_uncertainty": { "name": "Level uncertainty" },
       "net_flow": { "name": "Net flow" },
       "flow_change": { "name": "Flow change" },
       "surface_distance": { "name": "Surface distance" }

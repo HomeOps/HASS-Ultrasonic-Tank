@@ -10,6 +10,7 @@ looking down into a gravity-drained water tank into:
 | Flow change | L/min² | — (diagnostic) |
 | Level | % (derived from volume) | — |
 | Surface distance | m | `distance` (diagnostic) |
+| Level uncertainty (±) | % | — |
 | Surface locked | on/off | diagnostic |
 | Low water | on/off | `problem` |
 
@@ -80,9 +81,20 @@ for a 5000 L, ~2 m vertical tank:
 | Low water: delay | 15 min | |
 | First start: history to replay | 12 h | |
 
-**Low water is only decided while the surface has been seen recently.** While
-the model is coasting, the alarm holds its last state, so a blind estimate can
-neither announce an empty tank nor hide one.
+**Level uncertainty** is the level's ±, in level points: the level is
+`Level ± Level uncertainty`. It is the smallest distance around the published
+surface that holds 80 % of the last 30 min of echoes, each weighted by how long
+it was held. A calm, clean surface gives about ±1 %, the sensor's own noise.
+When a competing echo holds a large share of the time, the ± widens to reach
+it. Some wrong echoes are as steady as the water itself, and nothing in the
+distance stream says which one is real, so a wide ± means the level is a guess
+within that range. On the reference tank, Oct 25 – Nov 8, clean days stayed
+at ±1 % and noisy days ran ±18–24 %. 32 of the 35 hours where the level moved
+differently from the pressure sensor had a ± over 10 %.
+
+**Low water is only decided while the surface has been seen recently and the
+± is at most 10 %.** Otherwise the alarm holds its last state, so a guessed
+estimate can neither announce an empty tank nor hide one.
 
 **State survives restarts** in Home Assistant's storage. Nothing is written to
 the sensor device's flash. On first install, the model replays the last 12 h

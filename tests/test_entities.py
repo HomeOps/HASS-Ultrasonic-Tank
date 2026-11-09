@@ -46,6 +46,11 @@ def test_every_entity_has_a_translated_name():
     assert {"surface_locked", "low_water"} <= set(strings["entity"]["binary_sensor"])
 
 
+def test_level_uncertainty_is_plus_minus_percent():
+    assert sensor("level_uncertainty").native_unit_of_measurement == PERCENTAGE
+    assert sensor("level_uncertainty").state_class == SensorStateClass.MEASUREMENT
+
+
 def test_translations_match_strings():
     strings = (COMPONENT / "strings.json").read_text(encoding="utf-8")
     english = (COMPONENT / "translations" / "en.json").read_text(encoding="utf-8")

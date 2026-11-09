@@ -28,6 +28,17 @@ local fill hours), so the swings between echoes are damped; a fill outside
 those hours, such as a truck delivery, shows up late.  While the surface is not visible
 the estimate coasts along the last *drain* velocity; it never invents a fill.
 
+Uncertainty (+/-)
+-----------------
+Some wrong echoes are as steady as the surface, and nothing in the distance
+stream alone tells them apart.  So every reading carries a +/- in level
+points: the smallest radius around the published surface that holds
+``uncertain_coverage`` of the echoes of the last ``uncertain_window_s``
+(weighted by how long each frame was held).  A calm, clean surface gives the
+per-frame noise; a strong competing echo widens it to reach that echo.  Above
+``uncertain_alarm_pts`` the level is not trusted, and the low-water alarm holds
+its state.
+
 Units: distances in metres, times in seconds (epoch), level in percent of the
 usable span, volume in litres, flow in L/min, change in flow in L/min^2.
 """
@@ -69,6 +80,12 @@ class TankParameters:
     fill_window_start_h: float = 5.0        # local hour the usual fill window opens (start == end: no window)
     fill_window_end_h: float = 8.0          # local hour it closes
     utc_offset_h: float = 0.0               # local time = UTC + this (the integration sets HA's time zone)
+    uncertain_window_s: float = 1800.0      # echoes this recent set the level's +/- ; <= 0 = off (always +/- noise)
+    uncertain_check_s: float = 60.0         # recomputed this often
+    uncertain_hold_cap_s: float = 60.0      # a frame counts for how long it was held, at most this
+    uncertain_coverage: float = 0.8         # the +/- reaches the echoes holding this share of the window
+    uncertain_min_frames: int = 30          # fewer frames in the window: the +/- keeps its last value
+    uncertain_alarm_pts: float = 10.0       # above this +/- the level is not trusted: the low-water alarm holds
 
     @property
     def span_m(self) -> float:
@@ -102,6 +119,8 @@ class TankReading:
     seconds_since_surface: float | None
     max_outflow_lpm: float
     max_inflow_lpm: float
+    uncertainty_pct: float = 0.0            # the level is level_pct +/- this (points of level)
+    level_certain: bool = True              # uncertainty_pct <= uncertain_alarm_pts
 
 
 @dataclass
@@ -129,6 +148,9 @@ class TankModel:
         self._change: deque[float] = deque(self._s.change_samples, maxlen=self._window(self.params.change_window_s))
         self._recent: deque[tuple[float, float]] = deque()   # (time, distance) of valid frames, for rise support
         self._beliefs: deque[tuple[float, float]] = deque()  # (time, level %) before publishing, for the median
+        self._echoes: deque[tuple[float, float]] = deque()   # (time, distance) of every in-range frame, for certainty
+        self._uncertainty_checked: float | None = None
+        self._uncertainty_pct = self._noise_pct()
 
     # ------------------------------------------------------------------ frames
     def add_frame(self, time: float, distance_m: float) -> bool:
@@ -140,6 +162,10 @@ class TankModel:
             s.last_valid = time
             return False
         x = min(distance_m, p.floor_m)      # beyond-floor echoes are the floor
+        if p.uncertain_window_s > 0:
+            self._echoes.append((time, x))
+            while self._echoes and self._echoes[0][0] < time - p.uncertain_window_s:
+                self._echoes.popleft()
         if p.max_rise_gap_s > 0:
             self._recent.append((time, x))
             while self._recent and self._recent[0][0] < time - p.rise_support_window_s:
@@ -216,18 +242,62 @@ class TankModel:
         self._change.append(change)
 
         seconds_since = None if not s.has_lock or s.last_valid is None else max(time - s.last_valid, 0.0)
+        surface_m = p.floor_m - level / 100.0 * p.span_m
+        self._update_uncertainty(time, surface_m)
         return TankReading(
             time=time,
             level_pct=level,
             volume_l=level * p.litres_per_pct,
             net_flow_lpm=flow,
             flow_change_lpm2=sum(self._change) / len(self._change),
-            surface_m=p.floor_m - level / 100.0 * p.span_m,
+            surface_m=surface_m,
             surface_locked=seconds_since is not None and seconds_since <= p.lock_window_s,
             seconds_since_surface=seconds_since,
             max_outflow_lpm=p.max_fall_pct_per_min(level) * p.litres_per_pct,
             max_inflow_lpm=p.max_inflow_lpm,
+            uncertainty_pct=self._uncertainty_pct,
+            level_certain=self._uncertainty_pct <= p.uncertain_alarm_pts,
         )
+
+    def _noise_pct(self) -> float:
+        return self.params.noise_m / self.params.span_m * 100.0
+
+    def _update_uncertainty(self, time: float, surface_m: float) -> None:
+        """The level's +/-: the smallest radius around the published surface that holds
+        ``uncertain_coverage`` of the recent echoes, weighted by how long each was held.
+
+        On a calm surface nearly every echo sits on it and the +/- is the per-frame noise.
+        When another echo group holds a large share, nothing in the distance stream says
+        which one is the water, and the +/- widens to reach it.  The stationary reflector
+        does not count unless the surface is near it.
+        """
+        p = self.params
+        if p.uncertain_window_s <= 0:
+            return
+        if self._uncertainty_checked is not None and time - self._uncertainty_checked < p.uncertain_check_s:
+            return
+        self._uncertainty_checked = time
+        frames = [f for f in self._echoes if f[0] >= time - p.uncertain_window_s]
+        if len(frames) < p.uncertain_min_frames:
+            return
+        near_reflector = p.reflector_m > 0 and surface_m <= p.reflector_m + p.reflector_half_width_m + 0.05
+        offsets: list[tuple[float, float]] = []
+        for (t, x), (t_next, _) in zip(frames, frames[1:] + [(time, 0.0)]):
+            if p.reflector_m > 0 and not near_reflector and abs(x - p.reflector_m) < p.reflector_half_width_m:
+                continue
+            offsets.append((abs(x - surface_m), min(max(t_next - t, 0.0), p.uncertain_hold_cap_s)))
+        total = sum(w for _, w in offsets)
+        if total <= 0:
+            return
+        offsets.sort()
+        reached = 0.0
+        radius_m = offsets[-1][0]
+        for offset, weight in offsets:
+            reached += weight
+            if reached >= p.uncertain_coverage * total:
+                radius_m = offset
+                break
+        self._uncertainty_pct = max(radius_m, p.noise_m) / p.span_m * 100.0
 
     # ------------------------------------------------------------ persistence
     def to_dict(self) -> dict[str, Any]:
@@ -272,13 +342,18 @@ class TankModel:
     def has_lock(self) -> bool:
         return self._s.has_lock
 
+    @property
+    def uncertainty_pct(self) -> float:
+        return self._uncertainty_pct
+
 
 class LowWaterAlarm:
     """Low-water flag that a coasted estimate can neither raise nor clear.
 
     ON once the level has stayed below ``threshold_pct`` for ``delay_s`` while
-    the surface was seen within ``max_coast_s``.  While the model is coasting
-    longer than that, the flag holds its last value: a blind estimate must never
+    the surface was seen within ``max_coast_s`` and the level was certain.  While
+    the model is coasting longer than that, or a competing echo makes the level
+    uncertain, the flag holds its last value: a guessed estimate must never
     announce an empty tank (or hide one).
     """
 
@@ -289,8 +364,9 @@ class LowWaterAlarm:
 
     def update(self, reading: TankReading) -> bool | None:
         seen = reading.seconds_since_surface
-        if seen is None or seen > self.max_coast_s:
-            return self.is_on                       # blind: hold
+        if seen is None or seen > self.max_coast_s or not reading.level_certain:
+            self._low_since = None                  # the delay restarts once the level is trusted again
+            return self.is_on                       # blind or uncertain: hold
         if reading.level_pct < self.threshold_pct:
             if self._low_since is None:
                 self._low_since = reading.time

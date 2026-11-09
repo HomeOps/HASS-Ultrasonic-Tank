@@ -40,7 +40,7 @@ class SurfaceLockedSensor(TankEntity, BinarySensorEntity):
 
 
 class LowWaterSensor(TankEntity, BinarySensorEntity):
-    """Low water, only ever decided while the surface has been seen recently."""
+    """Low water, only ever decided while the surface has been seen recently and the level's +/- is small."""
 
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
 
