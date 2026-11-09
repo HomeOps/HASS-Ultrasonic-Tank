@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/HomeOps/HASS-Ultrasonic-Tank/compare/v0.2.2...v0.3.0) (2026-11-09)
+
+
+### Features
+
+* **model:** publish the level's uncertainty (±) as a sensor ([#11](https://github.com/HomeOps/HASS-Ultrasonic-Tank/issues/11)) ([df27d9b](https://github.com/HomeOps/HASS-Ultrasonic-Tank/commit/df27d9bb6a54088651e1a0ff5e8cc232b553fd2d))
+
 ## [0.2.2](https://github.com/HomeOps/HASS-Ultrasonic-Tank/compare/v0.2.1...v0.2.2) (2026-11-06)
 
 

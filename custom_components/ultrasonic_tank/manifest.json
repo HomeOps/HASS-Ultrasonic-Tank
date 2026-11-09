@@ -1,7 +1,7 @@
 {
   "domain": "ultrasonic_tank",
   "name": "Ultrasonic Tank",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "documentation": "https://github.com/HomeOps/HASS-Ultrasonic-Tank",
   "issue_tracker": "https://github.com/HomeOps/HASS-Ultrasonic-Tank/issues",
   "iot_class": "calculated",
