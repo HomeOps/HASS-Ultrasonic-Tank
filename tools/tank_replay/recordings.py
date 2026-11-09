@@ -1,17 +1,19 @@
-"""Read the recorded data: daily CSVs (one per local day) and the owner's truth spans."""
+"""Read the recorded data: daily CSVs (one per local day) and the owner's level spans."""
 from __future__ import annotations
 
 import csv
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-RAW_ENTITY = "sensor.driveway_water_tank_sensor_tank_distance_raw"
-REFERENCE_ENTITY = "sensor.aboveground_water_tank_level"
-LIVE_ENTITY = "sensor.water_tank_level"
+# The only two inputs, both raw instrument readings. Nothing derived (no % made from
+# pressure) is ever read: pressure and distance are different physics, and a % made
+# from pressure was once mistaken for the true level (2026-11-08).
+RAW_ENTITY = "sensor.driveway_water_tank_sensor_tank_distance_raw"       # m, the model input
+REFERENCE_ENTITY = "sensor.aboveground_water_tank_pressure"              # hPa, correlation only
+PLAUSIBLE = {RAW_ENTITY: (0.0, 10.0), REFERENCE_ENTITY: (-50.0, 600.0)}  # a value outside is the wrong unit
 LEGACY_TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"    # the old TimeUtc column
 DAILY_FILE_GLOB = "????-??-??.csv"              # annotations and other files differ in format
 ANNOTATIONS_FILE = "reference-annotations.csv"
-ANNOTATION_STEP_S = 15 * 60                     # an owner truth span is scored every 15 min
 
 
 def parse_time(row: dict) -> float:
@@ -22,7 +24,12 @@ def parse_time(row: dict) -> float:
 
 
 def load_series(folder: Path, from_day: date | None, to_day: date | None, entities: dict[str, str]) -> dict:
-    """{role: [(time, value)]} for each role -> entity, numeric states only, plus "files"."""
+    """{role: [(time, value)]} for each role -> entity, numeric states only, plus "files".
+
+    Only the raw distance (m) and the raw pressure (hPa) may be read."""
+    for entity in entities.values():
+        if entity not in PLAUSIBLE:
+            raise SystemExit(f"{entity}: only {RAW_ENTITY} (m) and {REFERENCE_ENTITY} (hPa) may be read")
     files = sorted(folder.glob(DAILY_FILE_GLOB))
     if from_day:
         files = [f for f in files if f.stem >= from_day.isoformat()]
@@ -43,8 +50,12 @@ def load_series(folder: Path, from_day: date | None, to_day: date | None, entiti
                 except ValueError:
                     continue            # unavailable / unknown
                 series[role].append((parse_time(row), value))
-    for points in series.values():
+    for role, points in series.items():
         points.sort()
+        low, high = PLAUSIBLE[entities[role]]
+        bad = [v for _, v in points if not low <= v <= high]
+        if bad:
+            raise SystemExit(f"{entities[role]}: {len(bad)} values outside {low}..{high}, e.g. {bad[0]}; wrong unit?")
     series["files"] = [f.name for f in files]
     return series
 
@@ -64,15 +75,3 @@ def load_annotations(folder: Path, first: float, last: float) -> list[dict]:
             spans.append({"start": max(start, first), "end": min(end, last),
                           "min": float(row["MinPct"]), "max": float(row["MaxPct"]), "source": row["Source"]})
     return spans
-
-
-def truth_samples(reference: list[tuple[float, float]], annotations: list[dict]) -> list[tuple[float, float, float]]:
-    """(time, low, high) truth: a pressure sample is a point; an owner span is sampled every ANNOTATION_STEP_S."""
-    truth = [(t, v, v) for t, v in reference]
-    for span in annotations:
-        t = span["start"]
-        while t <= span["end"]:
-            truth.append((t, span["min"], span["max"]))
-            t += ANNOTATION_STEP_S
-    truth.sort()
-    return truth

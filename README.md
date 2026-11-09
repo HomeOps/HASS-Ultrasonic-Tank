@@ -34,11 +34,12 @@ reflection and is discarded. The published level integrates a velocity clamped
 to the same envelope, so it never jumps. While the surface is not visible, the
 estimate coasts along the last drain rate. It never invents a fill.
 
-Measured against an independent hydrostatic sensor over three days (the
-hydrostatic sensor is used for validation only):
-
-- Normal operation: mean error 3.8 %, p90 7.3 %, max 9.4 %.
-- No false "full" reading while the tank was empty.
+Checked against an independent hydrostatic sensor, by correlation only: it
+measures pressure (hPa), not level, so it shows whether the level rises, falls
+and holds when the water does, never how many % the level is off. The
+benchmark charts in `docs/` show it per window; on Nov 6-8, with clean echoes,
+the level ranks in the same order as pressure (rank correlation 0.98) and
+moves with it in every hour.
 
 ## Requirements
 
@@ -85,8 +86,7 @@ neither announce an empty tank nor hide one.
 
 **State survives restarts** in Home Assistant's storage. Nothing is written to
 the sensor device's flash. On first install, the model replays the last 12 h
-of recorder history, starting from empty. In replay tests the mean error after
-the bootstrap was 2 %. A few minutes of frames cannot seed the model, because
+of recorder history, starting from empty. A few minutes of frames cannot seed the model, because
 they can be 100 % reflector echoes on an empty tank.
 
 ## Known limits
